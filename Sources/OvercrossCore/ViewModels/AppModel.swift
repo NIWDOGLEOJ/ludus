@@ -175,6 +175,11 @@ final class AppModel: ObservableObject {
     @Published var updateCheckMessage: String? = nil
     @Published var isDownloadingUpdate = false
     let updateService = GitHubUpdateService.shared
+    let anonymousDiagnosticsService = AnonymousDiagnosticsService.shared
+    @Published var showDiagnosticsConsentSheet = false
+    @Published var lastDiagnosticPayload: AnonymousDiagnosticPayload? = nil
+    @Published var isSendingDiagnostics = false
+    @Published var diagnosticsStatusMessage: String? = nil
     private var downloadOperationIDs: [UUID: UUID] = [:]
     private var autonomousDownloadTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -277,6 +282,7 @@ final class AppModel: ObservableObject {
         hasSteamAPIKey = steamAccountStore.hasAPIKey
         steamAuthenticationMessage = nil
         settings = AppSettings.load()
+        lastDiagnosticPayload = anonymousDiagnosticsService.loadLastReport()
         let savedRuntimes = runtimeStore.load()
         runtimeReport = RuntimeDiagnosticReport(
             generatedAt: .distantPast,
@@ -2253,6 +2259,19 @@ final class AppModel: ObservableObject {
                     outcome: outcome,
                     error: nil
                 )
+                if outcome.exitStatus != 0 {
+                    let exitError = NSError(
+                        domain: "GameExecution",
+                        code: Int(outcome.exitStatus),
+                        userInfo: [NSLocalizedDescriptionKey: "Game process exited with status \(outcome.exitStatus)."]
+                    )
+                    self.recordFailure(
+                        component: "GameExecution",
+                        error: exitError,
+                        additionalLogs: [outcome.summary, outcome.standardError, outcome.standardOutput],
+                        context: "Game \(game.title) exited with code \(outcome.exitStatus)"
+                    )
+                }
             } catch {
                 guard let self else { return }
                 self.lastLaunchLog = error.localizedDescription
@@ -2263,6 +2282,12 @@ final class AppModel: ObservableObject {
                     kind: .windowsThroughWine,
                     outcome: nil,
                     error: error.localizedDescription
+                )
+                self.recordFailure(
+                    component: "GameLaunchService",
+                    error: error,
+                    additionalLogs: [game.title, game.executableURL?.path ?? ""],
+                    context: "Failed launching \(game.title)"
                 )
             }
             self?.isLaunchingGame = false
@@ -2720,6 +2745,7 @@ final class AppModel: ObservableObject {
 
     func startAutonomousBootstrap() {
         checkForUpdates(manual: false)
+        checkDiagnosticsConsentOnStartup()
         guard !bootstrapPhase.isReady else { return }
         Task { [weak self] in
             guard let self else { return }
@@ -2753,6 +2779,11 @@ final class AppModel: ObservableObject {
                 self.bootstrapPhase = .ready(runtime)
             } catch {
                 self.bootstrapPhase = .failed(error.localizedDescription)
+                self.recordFailure(
+                    component: "Bootstrap",
+                    error: error,
+                    context: "Failed provisioning runtime or default bottle"
+                )
             }
         }
     }
@@ -3236,5 +3267,90 @@ final class AppModel: ObservableObject {
     func stopGameAutonomous(gameID: UUID) {
         runningGameIDs.remove(gameID)
         cancelLaunch()
+    }
+
+    // MARK: - Anonymous Diagnostics & User Consent
+
+    func checkDiagnosticsConsentOnStartup() {
+        if settings.diagnosticsConsentStatus == .undetermined {
+            showDiagnosticsConsentSheet = true
+        }
+    }
+
+    func setDiagnosticsConsent(optIn: Bool) {
+        settings.diagnosticsConsentStatus = optIn ? .optedIn : .optedOut
+        settings.anonymousDiagnosticsEnabled = optIn
+        showDiagnosticsConsentSheet = false
+        settings.save()
+    }
+
+    func resetAnonymousInstallationID() {
+        settings.anonymousInstallationID = UUID().uuidString
+        settings.save()
+    }
+
+    func recordFailure(
+        component: String,
+        error: Error,
+        additionalLogs: [String] = [],
+        context: String? = nil,
+        isUserInitiated: Bool = false,
+        userFeedback: String? = nil
+    ) {
+        let payload = anonymousDiagnosticsService.buildPayload(
+            component: component,
+            error: error,
+            rawLogs: additionalLogs,
+            anonymousInstallationID: settings.anonymousInstallationID,
+            isUserInitiated: isUserInitiated,
+            userFeedback: userFeedback
+        )
+        self.lastDiagnosticPayload = payload
+
+        if settings.anonymousDiagnosticsEnabled || isUserInitiated {
+            isSendingDiagnostics = true
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let endpoint = self.settings.customDiagnosticsEndpoint.flatMap { URL(string: $0) }
+                    try await self.anonymousDiagnosticsService.sendReport(payload, endpointURL: endpoint)
+                    Task { @MainActor in
+                        self.isSendingDiagnostics = false
+                        self.diagnosticsStatusMessage = "Diagnostic report shared anonymously."
+                    }
+                } catch {
+                    Task { @MainActor in
+                        self.isSendingDiagnostics = false
+                        self.diagnosticsStatusMessage = "Report saved locally."
+                    }
+                }
+            }
+        } else {
+            anonymousDiagnosticsService.saveReportLocally(payload)
+        }
+    }
+
+    func sampleOrLastDiagnosticPayload() -> AnonymousDiagnosticPayload {
+        if let last = lastDiagnosticPayload ?? anonymousDiagnosticsService.loadLastReport() {
+            return last
+        }
+        return anonymousDiagnosticsService.buildPayload(
+            component: "SampleComponent",
+            error: NSError(domain: "LudusSample", code: 0, userInfo: [NSLocalizedDescriptionKey: "Sample error for privacy preview"]),
+            rawLogs: ["Sample sanitized log line 1", "Wine-CX Apple Silicon D3DMetal initialized"],
+            anonymousInstallationID: settings.anonymousInstallationID,
+            isUserInitiated: true
+        )
+    }
+
+    func submitManualFeedback(message: String) {
+        let error = NSError(domain: "UserFeedback", code: 200, userInfo: [NSLocalizedDescriptionKey: "User Submitted Feedback"])
+        recordFailure(
+            component: "UserFeedback",
+            error: error,
+            additionalLogs: [lastLaunchLog ?? ""],
+            isUserInitiated: true,
+            userFeedback: message
+        )
     }
 }

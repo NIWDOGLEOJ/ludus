@@ -196,6 +196,10 @@ struct OvercrossTestApp {
         runTest(name: "testEpicServiceFindApplicationID") { try $0.testEpicServiceFindApplicationID() }
         await runAsyncTest(name: "testEpicServiceGetLaunchArguments") { try await $0.testEpicServiceGetLaunchArguments() }
         runTest(name: "testGitHubUpdateServiceVersionComparison") { $0.testGitHubUpdateServiceVersionComparison() }
+        runTest(name: "testLogSanitizerScrubsPII") { $0.testLogSanitizerScrubsPII() }
+        runTest(name: "testAnonymousDiagnosticPayloadGeneration") { $0.testAnonymousDiagnosticPayloadGeneration() }
+        runTest(name: "testDiagnosticsConsentAndSettingsPersistence") { $0.testDiagnosticsConsentAndSettingsPersistence() }
+        runTest(name: "testAnonymousDiagnosticsLocalReportStorage") { $0.testAnonymousDiagnosticsLocalReportStorage() }
 
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

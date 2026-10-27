@@ -15,6 +15,12 @@ struct AppSettings: Codable, Equatable {
     var retinaScalingEnabled = false
     var defaultGraphicsBackend: GraphicsBackend = .automatic
 
+    // Anonymous Diagnostics & Feedback
+    var diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined
+    var anonymousDiagnosticsEnabled = false
+    var anonymousInstallationID: String = UUID().uuidString
+    var customDiagnosticsEndpoint: String?
+
     private static let storageKey = "overcross.settings"
 
     init(
@@ -28,7 +34,11 @@ struct AppSettings: Codable, Equatable {
         msyncEnabled: Bool = true,
         esyncEnabled: Bool = false,
         retinaScalingEnabled: Bool = false,
-        defaultGraphicsBackend: GraphicsBackend = .automatic
+        defaultGraphicsBackend: GraphicsBackend = .automatic,
+        diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined,
+        anonymousDiagnosticsEnabled: Bool = false,
+        anonymousInstallationID: String = UUID().uuidString,
+        customDiagnosticsEndpoint: String? = nil
     ) {
         self.preferredInstallDirectory = preferredInstallDirectory
         self.heroicLegendaryConfigDirectory = heroicLegendaryConfigDirectory
@@ -41,6 +51,10 @@ struct AppSettings: Codable, Equatable {
         self.esyncEnabled = esyncEnabled
         self.retinaScalingEnabled = retinaScalingEnabled
         self.defaultGraphicsBackend = defaultGraphicsBackend
+        self.diagnosticsConsentStatus = diagnosticsConsentStatus
+        self.anonymousDiagnosticsEnabled = anonymousDiagnosticsEnabled
+        self.anonymousInstallationID = anonymousInstallationID.isEmpty ? UUID().uuidString : anonymousInstallationID
+        self.customDiagnosticsEndpoint = customDiagnosticsEndpoint
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -55,6 +69,10 @@ struct AppSettings: Codable, Equatable {
         case esyncEnabled
         case retinaScalingEnabled
         case defaultGraphicsBackend
+        case diagnosticsConsentStatus
+        case anonymousDiagnosticsEnabled
+        case anonymousInstallationID
+        case customDiagnosticsEndpoint
     }
 
     init(from decoder: Decoder) throws {
@@ -70,6 +88,11 @@ struct AppSettings: Codable, Equatable {
         esyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? false
         retinaScalingEnabled = try container.decodeIfPresent(Bool.self, forKey: .retinaScalingEnabled) ?? false
         defaultGraphicsBackend = try container.decodeIfPresent(GraphicsBackend.self, forKey: .defaultGraphicsBackend) ?? .automatic
+        diagnosticsConsentStatus = try container.decodeIfPresent(DiagnosticsConsentStatus.self, forKey: .diagnosticsConsentStatus) ?? .undetermined
+        anonymousDiagnosticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .anonymousDiagnosticsEnabled) ?? false
+        let decodedID = try container.decodeIfPresent(String.self, forKey: .anonymousInstallationID) ?? ""
+        anonymousInstallationID = decodedID.isEmpty ? UUID().uuidString : decodedID
+        customDiagnosticsEndpoint = try container.decodeIfPresent(String.self, forKey: .customDiagnosticsEndpoint)
     }
 
     static func load() -> AppSettings {

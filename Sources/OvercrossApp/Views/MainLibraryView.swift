@@ -90,6 +90,9 @@ struct MainLibraryView: View {
         .sheet(isPresented: $showDownloadsSheet) {
             DownloadManagerSheet()
         }
+        .sheet(isPresented: $appModel.showDiagnosticsConsentSheet) {
+            DiagnosticsConsentSheet()
+        }
         .onAppear {
             appModel.startAutonomousBootstrap()
             appModel.refreshStoreAuth()

@@ -632,6 +632,10 @@ struct PrefixComponentStatusView: View {
 struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @State private var showCacheClearConfirmation = false
+    @State private var showReportPreview = false
+    @State private var showFeedbackSheet = false
+    @State private var feedbackText = ""
+    @State private var feedbackSubmitted = false
 
     var body: some View {
         Form {
@@ -687,6 +691,85 @@ struct SettingsView: View {
                 )
                 if let error = appModel.diagnosticError {
                     Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Privacy & Anonymous Diagnostics") {
+                Toggle(
+                    "Share Anonymous Error & Bug Reports",
+                    isOn: Binding(
+                        get: { appModel.settings.anonymousDiagnosticsEnabled },
+                        set: { appModel.setDiagnosticsConsent(optIn: $0) }
+                    )
+                )
+                Text("When a game launch or background task fails, Ludus shares a sanitized diagnostic crash log with the developer. No usernames, personal paths, passwords, or files are ever collected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Label(
+                        appModel.settings.anonymousDiagnosticsEnabled ? "Status: Opted In (Anonymous)" : "Status: Opted Out",
+                        systemImage: appModel.settings.anonymousDiagnosticsEnabled ? "shield.lefthalf.filled.badge.checkmark" : "shield.slash"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(appModel.settings.anonymousDiagnosticsEnabled ? .purple : .secondary)
+
+                    Spacer()
+
+                    Button("View What Is Sent") {
+                        showReportPreview = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Anonymous ID: \(String(appModel.settings.anonymousInstallationID.prefix(8)))...")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("Random UUID; not linked to your hardware serial or Apple account.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Reset ID") {
+                        appModel.resetAnonymousInstallationID()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        showFeedbackSheet = true
+                    } label: {
+                        Label("Send Feedback / Report Bug", systemImage: "paperplane")
+                    }
+                    .buttonStyle(.bordered)
+
+                    if let payload = appModel.lastDiagnosticPayload {
+                        Button {
+                            let url = appModel.anonymousDiagnosticsService.gitHubIssueURL(for: payload)
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Label("Open GitHub Issue", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+                if appModel.isSendingDiagnostics {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.7)
+                        Text("Transmitting diagnostic report...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let msg = appModel.diagnosticsStatusMessage {
+                    Text(msg)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -785,6 +868,48 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes only files owned by Ludus in its application cache. Your games and compatibility environments will remain unchanged.")
+        }
+        .sheet(isPresented: $showReportPreview) {
+            DiagnosticReportPreviewSheet(payload: appModel.sampleOrLastDiagnosticPayload())
+        }
+        .sheet(isPresented: $showFeedbackSheet) {
+            VStack(spacing: 18) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Send Anonymous Feedback")
+                            .font(.headline)
+                        Text("Share logs, bug details, or requests with the developer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+                TextEditor(text: $feedbackText)
+                    .font(.body)
+                    .padding(8)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    .frame(height: 140)
+
+                HStack {
+                    Button("Cancel") {
+                        showFeedbackSheet = false
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+
+                    Button("Submit Anonymously") {
+                        appModel.submitManualFeedback(message: feedbackText)
+                        feedbackText = ""
+                        showFeedbackSheet = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.purple)
+                }
+            }
+            .padding(20)
+            .frame(width: 480, height: 260)
         }
     }
 }

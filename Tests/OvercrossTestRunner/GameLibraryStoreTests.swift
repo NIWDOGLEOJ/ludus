@@ -2467,5 +2467,82 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(GitHubUpdateService.isVersion("0.0.9", newerThan: "0.1.0"))
         XCTAssertFalse(GitHubUpdateService.isVersion("v0.1.0", newerThan: "v0.1.1"))
     }
+
+    func testLogSanitizerScrubsPII() {
+        let rawLog = "Error at /Users/john_appleseed/Library/Application Support/Ludus/game.exe for player test.user@example.com with -AUTH_PASSWORD=secret123 --code auth_code_999 -epicovt=/Users/john/token.ovt"
+        let sanitized = AnonymousDiagnosticsService.sanitize(log: rawLog)
+
+        XCTAssertFalse(sanitized.contains("/Users/john_appleseed"))
+        XCTAssertFalse(sanitized.contains("john_appleseed"))
+        XCTAssertFalse(sanitized.contains("test.user@example.com"))
+        XCTAssertFalse(sanitized.contains("secret123"))
+        XCTAssertFalse(sanitized.contains("auth_code_999"))
+        XCTAssertTrue(sanitized.contains("~/Library/Application Support/Ludus/game.exe"))
+        XCTAssertTrue(sanitized.contains("[REDACTED_EMAIL]"))
+        XCTAssertTrue(sanitized.contains("-AUTH_PASSWORD=[REDACTED]"))
+        XCTAssertTrue(sanitized.contains("--code [REDACTED]"))
+    }
+
+    func testAnonymousDiagnosticPayloadGeneration() {
+        let service = AnonymousDiagnosticsService()
+        let error = NSError(domain: "GameLaunchService", code: 42, userInfo: [NSLocalizedDescriptionKey: "Failed launching at /Users/developer/game.exe"])
+        let payload = service.buildPayload(
+            component: "GameLaunchService",
+            error: error,
+            rawLogs: ["Starting process at /Users/developer/wine", "Bearer secret_token_123"],
+            anonymousInstallationID: "anon-test-uuid-1234"
+        )
+
+        XCTAssertEqual(payload.component, "GameLaunchService")
+        XCTAssertEqual(payload.anonymousInstallationID, "anon-test-uuid-1234")
+        XCTAssertFalse(payload.errorDescription.contains("/Users/developer"))
+        XCTAssertTrue(payload.errorDescription.contains("~/game.exe"))
+        XCTAssertEqual(payload.sanitizedLogs.count, 2)
+        XCTAssertTrue(payload.sanitizedLogs[1].contains("Bearer [REDACTED]"))
+        XCTAssertFalse(payload.chipModel.isEmpty)
+        XCTAssertFalse(payload.chipArchitecture.isEmpty)
+    }
+
+    func testDiagnosticsConsentAndSettingsPersistence() {
+        var settings = AppSettings()
+        XCTAssertEqual(settings.diagnosticsConsentStatus, .undetermined)
+        XCTAssertFalse(settings.anonymousDiagnosticsEnabled)
+        XCTAssertFalse(settings.anonymousInstallationID.isEmpty)
+
+        settings.diagnosticsConsentStatus = .optedIn
+        settings.anonymousDiagnosticsEnabled = true
+        settings.save()
+
+        let reloaded = AppSettings.load()
+        XCTAssertEqual(reloaded.diagnosticsConsentStatus, .optedIn)
+        XCTAssertTrue(reloaded.anonymousDiagnosticsEnabled)
+        XCTAssertEqual(reloaded.anonymousInstallationID, settings.anonymousInstallationID)
+    }
+
+    func testAnonymousDiagnosticsLocalReportStorage() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("LudusDiagTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let service = AnonymousDiagnosticsService(baseDirectory: tempDir)
+        let error = NSError(domain: "TestDomain", code: 99, userInfo: [NSLocalizedDescriptionKey: "Test error description"])
+        let payload = service.buildPayload(
+            component: "BottleManager",
+            error: error,
+            rawLogs: ["Line 1", "Line 2"],
+            anonymousInstallationID: "test-storage-id"
+        )
+
+        service.saveReportLocally(payload)
+
+        let loaded = service.loadLastReport()
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.component, "BottleManager")
+        XCTAssertEqual(loaded?.anonymousInstallationID, "test-storage-id")
+        XCTAssertEqual(loaded?.sanitizedLogs, ["Line 1", "Line 2"])
+
+        let history = service.loadReportHistory()
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history.first?.component, "BottleManager")
+    }
 }
 

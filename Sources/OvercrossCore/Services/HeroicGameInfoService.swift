@@ -74,8 +74,9 @@ struct HeroicGameInfoService: Sendable {
             throw HeroicGameInfoError.legendaryExecutableNotFound
         }
         let arguments = try Self.infoArguments(applicationName: applicationName)
-        var environment = ProcessInfo.processInfo.environment
-        environment["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        var mutableEnv = ProcessInfo.processInfo.environment
+        mutableEnv["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        let environment = mutableEnv
         let runner = ProcessRunner()
         let result = try await Task.detached(priority: .userInitiated) {
             try runner.run(

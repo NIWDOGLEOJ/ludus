@@ -186,8 +186,9 @@ struct EpicService: Sendable {
             )
         }
 
-        var env = ProcessInfo.processInfo.environment
-        env["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        var mutableEnv = ProcessInfo.processInfo.environment
+        mutableEnv["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        let env = mutableEnv
 
         var result = try await Task.detached(priority: .userInitiated) {
             try processRunner.run(
@@ -251,8 +252,9 @@ struct EpicService: Sendable {
             throw NSError(domain: "EpicService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Legendary compatibility engine not found."])
         }
 
-        var env = ProcessInfo.processInfo.environment
-        env["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        var mutableEnv = ProcessInfo.processInfo.environment
+        mutableEnv["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        let env = mutableEnv
 
         let result = try await Task.detached(priority: .userInitiated) {
             try processRunner.run(
@@ -452,8 +454,9 @@ struct EpicService: Sendable {
         }
         Self.cleanupStaleLocksAndOrphans(configurationDirectory: configurationDirectory)
 
-        var env = ProcessInfo.processInfo.environment
-        env["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        var mutableEnv = ProcessInfo.processInfo.environment
+        mutableEnv["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        let env = mutableEnv
 
         let fetchedArgs = await Task.detached(priority: .userInitiated) {
             let process = Process()

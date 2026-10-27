@@ -75,8 +75,9 @@ struct HeroicMoveService: Sendable {
             applicationName: applicationName,
             destinationDirectory: destinationDirectory
         )
-        var environment = ProcessInfo.processInfo.environment
-        environment["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        var mutableEnv = ProcessInfo.processInfo.environment
+        mutableEnv["LEGENDARY_CONFIG_PATH"] = configurationDirectory.path
+        let environment = mutableEnv
         let runner = ProcessRunner()
         let result = try await Task.detached(priority: .userInitiated) {
             try runner.run(

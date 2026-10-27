@@ -359,12 +359,14 @@ final class SteamOpenIDAuthenticator: NSObject, ASWebAuthenticationPresentationC
         session = nil
     }
 
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first ?? NSWindow(
-            contentRect: .zero,
-            styleMask: [],
-            backing: .buffered,
-            defer: false
-        )
+    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first ?? NSWindow(
+                contentRect: .zero,
+                styleMask: [],
+                backing: .buffered,
+                defer: false
+            )
+        }
     }
 }

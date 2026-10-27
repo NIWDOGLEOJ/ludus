@@ -23,10 +23,11 @@ struct PerformanceSnapshotService: Sendable {
         var count = mach_msg_type_number_t(
             MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size
         )
+        nonisolated(unsafe) let currentTask = mach_task_self_
         let result = withUnsafeMutablePointer(to: &info) { pointer in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
                 task_info(
-                    mach_task_self_,
+                    currentTask,
                     task_flavor_t(MACH_TASK_BASIC_INFO),
                     reboundPointer,
                     &count

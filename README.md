@@ -21,6 +21,16 @@
 2. Download the latest **`Ludus.dmg`**.
 3. Open the disk image and drag **Ludus.app** into your **Applications** folder.
 
+> [!NOTE]
+> **First-Time macOS Launch (Gatekeeper)**:
+> Because Ludus is a free community open-source project without a paid Apple Developer certificate, macOS Gatekeeper may show a warning: *"“Ludus.app” is damaged and can't be opened"* or *"cannot be verified"*.
+>
+> To resolve this, simply run this command in **Terminal** once:
+> ```bash
+> xattr -cr /Applications/Ludus.app
+> ```
+> *(Or **Right-Click** `Ludus.app` in Finder ➔ select **Open** ➔ click **Open**).*
+
 ---
 
 ## 🛠️ Building from Source

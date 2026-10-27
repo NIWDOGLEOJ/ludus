@@ -32,10 +32,11 @@ chmod 755 "$contents_path/MacOS/Ludus"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$contents_path/Info.plist"
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-    codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$app_path"
+    print "Signing with identity: $CODESIGN_IDENTITY"
+    codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$app_path"
+else
+    print "Ad-hoc signing bundle..."
+    codesign --force --deep --sign - "$app_path"
 fi
 
 print "Created $app_path"
-if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
-    print "The app is unsigned. Set CODESIGN_IDENTITY to sign it for distribution."
-fi

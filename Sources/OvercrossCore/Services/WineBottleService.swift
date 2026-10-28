@@ -462,12 +462,12 @@ struct WineBottleService: Sendable {
         }
     }
 
-    /// Terminates all stuck Wine processes cleanly using `wineserver -k`,
-    /// flushes runtime sockets, and performs a clean reboot of the prefix.
-    func forceStopAndReset(
+    /// Terminates all Wine processes cleanly using `wineserver -k`,
+    /// waits for clean exit (-w), and terminates any remaining orphan Wine helper processes.
+    static func terminateBottleProcesses(
         prefixURL: URL,
         runtime: DetectedRuntime? = nil
-    ) async throws -> String {
+    ) {
         // 1. Locate wineserver
         var wineserverURL: URL?
         if let runtime {
@@ -477,7 +477,7 @@ struct WineBottleService: Sendable {
             }
         }
         if wineserverURL == nil {
-            if let found = Self.findCrossOverResource(path: "bin/wineserver") {
+            if let found = findCrossOverResource(path: "bin/wineserver") {
                 wineserverURL = found
             }
         }
@@ -489,6 +489,61 @@ struct WineBottleService: Sendable {
             }
         }
 
+        var env = ProcessInfo.processInfo.environment
+        env["WINEPREFIX"] = prefixURL.path
+        if let cxRoot = findCrossOverResource(path: "") {
+            env["CX_ROOT"] = cxRoot.path
+            env["CX_BOTTLE"] = prefixURL.lastPathComponent
+        }
+
+        // 2. Clean shutdown: commit registry changes and request clean exit
+        if let wineserver = wineserverURL {
+            let killProc = Process()
+            killProc.executableURL = wineserver
+            killProc.arguments = ["-k"]
+            killProc.environment = env
+            try? killProc.run()
+            killProc.waitUntilExit()
+
+            let waitProc = Process()
+            waitProc.executableURL = wineserver
+            waitProc.arguments = ["-w"]
+            waitProc.environment = env
+            try? waitProc.run()
+
+            let timeout = DispatchTime.now() + 1.0
+            while waitProc.isRunning && DispatchTime.now() < timeout {
+                usleep(50000) // 50ms
+            }
+            if waitProc.isRunning {
+                waitProc.terminate()
+            }
+        }
+
+        // 3. Terminate any orphan Wine processes associated with this prefix (winedevice.exe, etc.)
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-TERM", "-f", prefixURL.path]
+        try? pkill.run()
+        pkill.waitUntilExit()
+
+        usleep(50000)
+
+        let pkill9 = Process()
+        pkill9.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill9.arguments = ["-9", "-f", prefixURL.path]
+        try? pkill9.run()
+        pkill9.waitUntilExit()
+    }
+
+    /// Terminates all stuck Wine processes cleanly using `wineserver -k`,
+    /// flushes runtime sockets, and performs a clean reboot of the prefix.
+    func forceStopAndReset(
+        prefixURL: URL,
+        runtime: DetectedRuntime? = nil
+    ) async throws -> String {
+        Self.terminateBottleProcesses(prefixURL: prefixURL, runtime: runtime)
+
         let runner = ProcessRunner()
         var env = ProcessInfo.processInfo.environment
         env["WINEPREFIX"] = prefixURL.path
@@ -496,33 +551,6 @@ struct WineBottleService: Sendable {
             env["CX_ROOT"] = cxRoot.path
             env["CX_BOTTLE"] = prefixURL.lastPathComponent
         }
-
-        // Clean shutdown: tell wineserver to commit registry changes and exit (-k), then wait (-w)
-        if let wineserver = wineserverURL {
-            _ = try? runner.run(wineserver.path, arguments: ["-k"], environment: env)
-
-            // Allow wineserver up to 1.5 seconds to commit to disk
-            let waitProcess = Process()
-            waitProcess.executableURL = wineserver
-            waitProcess.arguments = ["-w"]
-            waitProcess.environment = env
-            try? waitProcess.run()
-
-            let timeout = DispatchTime.now() + 1.5
-            while waitProcess.isRunning && DispatchTime.now() < timeout {
-                usleep(50000) // 50ms
-            }
-            if waitProcess.isRunning {
-                waitProcess.terminate()
-            }
-        }
-
-        // Terminate any remaining stuck processes by prefix path match
-        let pkill = Process()
-        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        pkill.arguments = ["-TERM", "-f", prefixURL.path]
-        try? pkill.run()
-        pkill.waitUntilExit()
 
         // 2. Clean reset bottle using cxreboot or wineboot -r
         if let cxreboot = Self.findCrossOverResource(path: "bin/cxreboot"),

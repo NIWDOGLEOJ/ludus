@@ -375,6 +375,9 @@ struct GameLaunchService: Sendable {
             diagnosticNotes.append("Using nested Windows executable (\(launchExecutableURL.lastPathComponent)).")
         }
 
+        // Preflight cleanup of any stale/lingering Wine daemon or orphan helper processes (winedevice.exe, etc.)
+        WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
+
         // Automatic Game Optimization (problematic DLL neutralization & memory/streaming tuning)
         let optimizationReport = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
         if let summary = optimizationReport.summary {
@@ -420,6 +423,11 @@ struct GameLaunchService: Sendable {
         let centerPoint = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
         CGWarpMouseCursorPosition(centerPoint)
         #endif
+
+        defer {
+            // Guaranteed cleanup of wineserver, winedevice.exe, services.exe, etc. when the game process finishes
+            WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
+        }
 
         var outcome = try await launchProcess(
             executableURL: runtimeExecutableURL,

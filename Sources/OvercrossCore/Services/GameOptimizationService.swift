@@ -171,7 +171,6 @@ struct GameOptimizationService: Sendable {
         let poolMB = poolSizeMB ?? optimalStreamingPoolMB()
         let appDataLocal = prefixURL.appendingPathComponent("drive_c/users/crossover/AppData/Local", isDirectory: true)
 
-        var targetEngineINI: URL?
         let cleanTitle = gameTitle.components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
         let exeStem = executableURL?.deletingPathExtension().lastPathComponent ?? cleanTitle
 
@@ -184,30 +183,36 @@ struct GameOptimizationService: Sendable {
             "Phoenix"
         ]
 
+        var existingCandidateURLs: [URL] = []
         if FileManager.default.fileExists(atPath: appDataLocal.path) {
             if let entries = try? FileManager.default.contentsOfDirectory(atPath: appDataLocal.path) {
                 for entry in entries {
                     for candidate in candidateFolderNames {
                         if entry.lowercased() == candidate.lowercased() {
                             let ini = appDataLocal.appendingPathComponent("\(entry)/Saved/Config/WindowsNoEditor/Engine.ini")
-                            targetEngineINI = ini
-                            break
+                            if FileManager.default.fileExists(atPath: ini.path) && !existingCandidateURLs.contains(ini) {
+                                existingCandidateURLs.append(ini)
+                            }
                         }
                     }
-                    if targetEngineINI != nil { break }
                 }
             }
         }
 
-        let finalINIURL: URL
-        if let existing = targetEngineINI {
-            finalINIURL = existing
+        var success = false
+        if !existingCandidateURLs.isEmpty {
+            for iniURL in existingCandidateURLs {
+                if applyEngineINISettings(to: iniURL, poolSizeMB: poolMB) {
+                    success = true
+                }
+            }
         } else {
             let folderName = cleanTitle.isEmpty ? (exeStem.isEmpty ? "UnrealGame" : exeStem) : cleanTitle
-            finalINIURL = appDataLocal.appendingPathComponent("\(folderName)/Saved/Config/WindowsNoEditor/Engine.ini")
+            let fallbackURL = appDataLocal.appendingPathComponent("\(folderName)/Saved/Config/WindowsNoEditor/Engine.ini")
+            success = applyEngineINISettings(to: fallbackURL, poolSizeMB: poolMB)
         }
 
-        return applyEngineINISettings(to: finalINIURL, poolSizeMB: poolMB)
+        return success
     }
 
     /// Safely updates or creates `Engine.ini` with optimal settings for Apple Silicon unified memory without wiping user customizations.
@@ -217,9 +222,10 @@ struct GameOptimizationService: Sendable {
 
         var content = (try? String(contentsOf: iniURL, encoding: .utf8)) ?? ""
 
-        // Scrub any unsafe shader compilation directives that cause Apple Silicon Metal startup crashes (status 3)
-        content = removeSettings(
-            keys: [
+        // Scrub hazardous directives, deduplicate keys, and apply unified memory streaming settings
+        content = updateSection(
+            named: "SystemSettings",
+            scrubKeys: [
                 "r.CreateShadersOnLoad",
                 "r.ShaderPipelineCache.BatchSize",
                 "r.ShaderPipelineCache.BackgroundBatchSize",
@@ -230,13 +236,6 @@ struct GameOptimizationService: Sendable {
                 "r.Shaders.Optimize",
                 "r.XGEShaderCompile"
             ],
-            from: "SystemSettings",
-            in: content
-        )
-
-        // Merge SystemSettings
-        content = mergeSection(
-            named: "SystemSettings",
             settings: [
                 "r.TextureStreaming": "1",
                 "r.Streaming.PoolSize": "\(poolSizeMB)",
@@ -252,18 +251,19 @@ struct GameOptimizationService: Sendable {
                 "t.MaxFPS": "120",
                 "gc.TimeBetweenPurgingPendingKillObjects": "30"
             ],
-            into: content
+            in: content
         )
 
-        // Merge ConsoleVariables
-        content = mergeSection(
+        // Deduplicate and apply async render thread console variables
+        content = updateSection(
             named: "ConsoleVariables",
+            scrubKeys: [],
             settings: [
                 "AllowAsyncRenderThreadUpdates": "1",
                 "AllowAsyncRenderThreadUpdatesDuringGamethreadUpdates": "1",
                 "AllowAsyncRenderThreadUpdatesEditor": "1"
             ],
-            into: content
+            in: content
         )
 
         do {
@@ -314,100 +314,133 @@ struct GameOptimizationService: Sendable {
         )
     }
 
-    private func removeSettings(
+    /// Updates or creates a section in an INI file, scrubbing specified keys, deduplicating keys, and merging new settings.
+    func updateSection(
+        named sectionName: String,
+        scrubKeys: [String] = [],
+        settings: [String: String] = [:],
+        in iniContent: String
+    ) -> String {
+        let lines = iniContent.components(separatedBy: "\n")
+        let targetHeader = "[\(sectionName)]".lowercased()
+        let scrubSet = Set(scrubKeys.map { $0.lowercased() })
+
+        // 1. Partition lines into sections
+        var sections: [(header: String?, lines: [String])] = []
+        var currentHeader: String?
+        var currentLines: [String] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                if currentHeader != nil || !currentLines.isEmpty {
+                    sections.append((currentHeader, currentLines))
+                }
+                currentHeader = trimmed
+                currentLines = []
+            } else {
+                currentLines.append(line)
+            }
+        }
+        sections.append((currentHeader, currentLines))
+
+        // 2. Locate or create target section
+        var targetIndex = sections.firstIndex { sec in
+            sec.header?.trimmingCharacters(in: .whitespaces).lowercased() == targetHeader
+        }
+
+        if targetIndex == nil {
+            sections.append(("[\(sectionName)]", []))
+            targetIndex = sections.count - 1
+        }
+
+        guard let index = targetIndex else { return iniContent }
+        let targetLines = sections[index].lines
+
+        // 3. Process section lines: scrub, deduplicate, and update existing settings
+        var seenKeys: Set<String> = []
+        var filteredLines: [String] = []
+        var updatedKeys: Set<String> = []
+
+        var lowerSettings: [String: (String, String)] = [:]
+        for (k, v) in settings {
+            lowerSettings[k.lowercased()] = (k, v)
+        }
+
+        for line in targetLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix(";") || trimmed.hasPrefix("#") {
+                filteredLines.append(line)
+                continue
+            }
+            if let eqIndex = line.firstIndex(of: "=") {
+                let key = String(line[..<eqIndex]).trimmingCharacters(in: .whitespaces)
+                let lowerKey = key.lowercased()
+
+                if scrubSet.contains(lowerKey) {
+                    continue
+                }
+
+                if seenKeys.contains(lowerKey) {
+                    continue
+                }
+                seenKeys.insert(lowerKey)
+
+                if let (canonicalKey, newValue) = lowerSettings[lowerKey] {
+                    filteredLines.append("\(canonicalKey)=\(newValue)")
+                    updatedKeys.insert(lowerKey)
+                } else {
+                    filteredLines.append(line)
+                }
+            } else {
+                filteredLines.append(line)
+            }
+        }
+
+        // 4. Append new settings that were not present in existing lines
+        for (key, val) in settings {
+            let lowerKey = key.lowercased()
+            if !updatedKeys.contains(lowerKey) && !seenKeys.contains(lowerKey) {
+                filteredLines.append("\(key)=\(val)")
+                updatedKeys.insert(lowerKey)
+            }
+        }
+
+        // 5. Trim trailing blank lines in section
+        while let last = filteredLines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            filteredLines.removeLast()
+        }
+
+        sections[index].lines = filteredLines
+
+        // 6. Reconstruct document
+        var outputLines: [String] = []
+        for (header, secLines) in sections {
+            if let header {
+                if !outputLines.isEmpty && !outputLines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
+                    outputLines.append("")
+                }
+                outputLines.append(header)
+            }
+            outputLines.append(contentsOf: secLines)
+        }
+
+        return outputLines.joined(separator: "\n")
+    }
+
+    func removeSettings(
         keys: [String],
         from sectionName: String,
         in iniContent: String
     ) -> String {
-        let lines = iniContent.components(separatedBy: "\n")
-        let sectionHeader = "[\(sectionName)]".lowercased()
-        let lowerKeys = Set(keys.map { $0.lowercased() })
-
-        var sectionStartIndex: Int?
-        var sectionEndIndex: Int?
-
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.lowercased() == sectionHeader {
-                sectionStartIndex = index
-            } else if sectionStartIndex != nil && trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
-                sectionEndIndex = index
-                break
-            }
-        }
-
-        guard let start = sectionStartIndex else { return iniContent }
-        let end = sectionEndIndex ?? lines.count
-
-        var filteredLines: [String] = []
-        for i in 0..<lines.count {
-            if i > start && i < end {
-                let line = lines[i]
-                if let eqIndex = line.firstIndex(of: "=") {
-                    let key = String(line[..<eqIndex]).trimmingCharacters(in: .whitespaces).lowercased()
-                    if lowerKeys.contains(key) {
-                        continue
-                    }
-                }
-            }
-            filteredLines.append(lines[i])
-        }
-
-        return filteredLines.joined(separator: "\n")
+        updateSection(named: sectionName, scrubKeys: keys, settings: [:], in: iniContent)
     }
 
-    private func mergeSection(
+    func mergeSection(
         named sectionName: String,
         settings: [String: String],
         into iniContent: String
     ) -> String {
-        var lines = iniContent.components(separatedBy: "\n")
-        let sectionHeader = "[\(sectionName)]".lowercased()
-
-        var sectionStartIndex: Int?
-        var sectionEndIndex: Int?
-
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.lowercased() == sectionHeader {
-                sectionStartIndex = index
-            } else if sectionStartIndex != nil && trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
-                sectionEndIndex = index
-                break
-            }
-        }
-
-        if let start = sectionStartIndex {
-            let end = sectionEndIndex ?? lines.count
-            var existingKeys: [String: Int] = [:]
-
-            for i in (start + 1)..<end {
-                let line = lines[i]
-                if let eqIndex = line.firstIndex(of: "=") {
-                    let key = String(line[..<eqIndex]).trimmingCharacters(in: .whitespaces)
-                    existingKeys[key.lowercased()] = i
-                }
-            }
-
-            var insertOffset = 0
-            for (key, val) in settings {
-                if let lineIdx = existingKeys[key.lowercased()] {
-                    lines[lineIdx + insertOffset] = "\(key)=\(val)"
-                } else {
-                    lines.insert("\(key)=\(val)", at: end + insertOffset)
-                    insertOffset += 1
-                }
-            }
-        } else {
-            if !lines.isEmpty && !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
-                lines.append("")
-            }
-            lines.append("[\(sectionName)]")
-            for (key, val) in settings {
-                lines.append("\(key)=\(val)")
-            }
-        }
-
-        return lines.joined(separator: "\n")
+        updateSection(named: sectionName, scrubKeys: [], settings: settings, in: iniContent)
     }
 }

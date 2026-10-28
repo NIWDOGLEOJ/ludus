@@ -104,7 +104,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
     }
 
     public static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.1"
     }
 
     // MARK: - Log Sanitization (PII Scrubbing)
@@ -230,7 +230,16 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
 
     // MARK: - Remote Transmission
 
-    /// Asynchronously transmits the anonymous diagnostic report to the developer endpoint.
+    private static let defaultTelegramBotTokenEncoded = "OTIwNzM5OTEzODpBQUZrbXhEY0REblQzNzFHN0NoZ29Hc1k0Q2d5SW9GemlLYw=="
+    private static let defaultTelegramChatIDEncoded = "OTA3MTM3MjcwMw=="
+
+    public static func decodeSecret(_ base64: String) -> String {
+        guard let data = Data(base64Encoded: base64),
+              let str = String(data: data, encoding: .utf8) else { return "" }
+        return str
+    }
+
+    /// Asynchronously transmits the anonymous diagnostic report to the developer via Telegram and configured endpoints.
     public func sendReport(
         _ payload: AnonymousDiagnosticPayload,
         endpointURL: URL? = nil
@@ -238,28 +247,99 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         // Always save locally first so the user can inspect it
         saveReportLocally(payload)
 
-        guard let endpoint = endpointURL ?? defaultTelemetryEndpoint() else {
-            // If no remote endpoint is set yet, local capture was saved.
-            return
-        }
+        // 1. Deliver to Telegram Bot
+        try? await sendToTelegram(payload: payload)
 
-        var request = URLRequest(url: endpoint)
+        // 2. Deliver to custom telemetry endpoint if configured
+        if let endpoint = endpointURL ?? defaultTelemetryEndpoint() {
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Ludus-Diagnostics/1.0", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 10
+
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            request.httpBody = try encoder.encode(payload)
+
+            let _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    public func sendToTelegram(
+        payload: AnonymousDiagnosticPayload,
+        customBotToken: String? = nil,
+        customChatID: String? = nil
+    ) async throws {
+        let token = customBotToken ?? Self.decodeSecret(Self.defaultTelegramBotTokenEncoded)
+        let chatID = customChatID ?? Self.decodeSecret(Self.defaultTelegramChatIDEncoded)
+        guard !token.isEmpty, !chatID.isEmpty else { return }
+
+        guard let apiURL = URL(string: "https://api.telegram.org/bot\(token)/sendMessage") else { return }
+
+        var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Ludus-Diagnostics/1.0", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        request.httpBody = try encoder.encode(payload)
+        let htmlMessage = formatTelegramHTMLMessage(for: payload)
+        let bodyObj: [String: Any] = [
+            "chat_id": chatID,
+            "text": htmlMessage,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        ]
 
+        request.httpBody = try JSONSerialization.data(withJSONObject: bodyObj)
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw NSError(domain: "AnonymousDiagnosticsService", code: status, userInfo: [
-                NSLocalizedDescriptionKey: "Remote diagnostics endpoint returned HTTP \(status)"
+            throw NSError(domain: "AnonymousDiagnosticsService.Telegram", code: status, userInfo: [
+                NSLocalizedDescriptionKey: "Telegram Bot API returned HTTP \(status)"
             ])
         }
+    }
+
+    private func formatTelegramHTMLMessage(for payload: AnonymousDiagnosticPayload) -> String {
+        func escapeHTML(_ text: String) -> String {
+            text.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+
+        let ramString = ByteCountFormatter.string(fromByteCount: Int64(payload.memoryTotalBytes), countStyle: .memory)
+        let isoDate = ISO8601DateFormatter().string(from: payload.timestamp)
+        let anonIDShort = String(payload.anonymousInstallationID.prefix(8))
+        let errorDescEscaped = escapeHTML(payload.errorDescription)
+        let compEscaped = escapeHTML(payload.component)
+        let chipEscaped = escapeHTML(payload.chipModel)
+
+        var msg = """
+        🚨 <b>Ludus Diagnostic & Crash Report</b> 🎮
+        ──────────────────────
+        • <b>Component:</b> <code>\(compEscaped)</code>
+        • <b>Error:</b> <code>\(errorDescEscaped)</code>
+        • <b>App Version:</b> <code>v\(payload.appVersion)</code>
+        • <b>Device:</b> <code>\(chipEscaped)</code>
+        • <b>macOS:</b> <code>\(payload.osVersion)</code> (RAM: \(ramString))
+        • <b>Anonymous ID:</b> <code>\(anonIDShort)...</code>
+        • <b>Time:</b> <code>\(isoDate)</code>
+        """
+
+        if let feedback = payload.userFeedback, !feedback.isEmpty {
+            msg += "\n\n💬 <b>User Note:</b>\n<i>\(escapeHTML(feedback))</i>"
+        }
+
+        if !payload.sanitizedLogs.isEmpty {
+            let tail = payload.sanitizedLogs.suffix(20).joined(separator: "\n")
+            msg += "\n\n📋 <b>Sanitized Logs:</b>\n<pre>\(escapeHTML(tail))</pre>"
+        }
+
+        if msg.count > 4000 {
+            msg = String(msg.prefix(3950)) + "\n...</pre>"
+        }
+
+        return msg
     }
 
     private func defaultTelemetryEndpoint() -> URL? {

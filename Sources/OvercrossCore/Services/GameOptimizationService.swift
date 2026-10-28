@@ -30,7 +30,9 @@ struct GameOptimizationService: Sendable {
     /// Known problematic libraries bundled in Windows games that cause thread spin-locks, CPU starvation, or crashes on Apple Silicon Wine.
     static let problematicLibraries: Set<String> = [
         "cchromaeditorlibrary64.dll",
-        "cchromaeditorlibrary.dll"
+        "cchromaeditorlibrary.dll",
+        "sl.interposer.dll",
+        "sl.reflex.dll"
     ]
 
     /// Recursively scans the game installation directory and neutralizes known problematic DLLs by safely renaming them to `.dll.bak`.
@@ -178,10 +180,22 @@ struct GameOptimizationService: Sendable {
                 "r.TextureStreaming": "1",
                 "r.Streaming.PoolSize": "\(poolSizeMB)",
                 "r.Streaming.LimitPoolSizeToVRAM": "1",
+                "r.Streaming.UseFixedPoolSize": "1",
+                "r.Streaming.HLODStrategy": "2",
+                "r.Streaming.DefragDynamicBounds": "1",
                 "r.bForceCPUAccessToGPUSkinVerts": "True",
                 "r.GTSyncType": "1",
                 "r.OneFrameThreadLag": "1",
                 "r.FinishCurrentFrame": "0",
+                "r.CreateShadersOnLoad": "1",
+                "r.Shaders.Optimize": "1",
+                "r.ShaderPipelineCache.Enabled": "1",
+                "r.ShaderPipelineCache.ReportPSO": "0",
+                "r.ShaderPipelineCache.BatchSize": "50",
+                "r.ShaderPipelineCache.BackgroundBatchSize": "50",
+                "r.ShaderPipelineCache.PreCompileBatchTime": "0",
+                "r.D3D12.TexturePoolSize": "\(poolSizeMB)",
+                "r.XGEShaderCompile": "0",
                 "gc.TimeBetweenPurgingPendingKillObjects": "30"
             ],
             into: content

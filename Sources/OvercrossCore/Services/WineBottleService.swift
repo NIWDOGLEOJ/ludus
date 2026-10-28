@@ -122,6 +122,9 @@ struct WineBottleService: Sendable {
             try userContent.write(to: userReg, atomically: true, encoding: .utf8)
         }
 
+        // Synchronize bottle registry (macOS Spaces Native Fullscreen, mouse confinement, DirectSound latency buffers)
+        _ = try? Self.syncBottleRegistry(prefixURL: defaultBottleURL, retina: false)
+
         // Synchronize bottle configuration (win10_64 template + D3DMetal backend)
         Self.syncBottleConfiguration(prefixURL: defaultBottleURL, backend: .d3dmetal, msync: true, retina: false)
 
@@ -364,6 +367,9 @@ struct WineBottleService: Sendable {
                    trimmed.hasPrefix("\"WINEDXMT\"") ||
                    trimmed.hasPrefix("\"WINEMSYNC\"") ||
                    trimmed.hasPrefix("\"MTL_SHADER_VALIDATION\"") ||
+                   trimmed.hasPrefix("\"MTL_SHADER_CACHE_MODE\"") ||
+                   trimmed.hasPrefix("\"STAGING_AUDIO_DURATION\"") ||
+                   trimmed.hasPrefix("\"WINEAUDIO_BUFFER_SIZE\"") ||
                    trimmed.hasPrefix("\"WINE_HIGH_PERFORMANCE\"") {
                     continue
                 }
@@ -378,6 +384,9 @@ struct WineBottleService: Sendable {
             "\"WINEDXMT\" = \"\(resolvedBackend == .dxmt ? "1" : "0")\"",
             "\"WINEMSYNC\" = \"\(msync ? "1" : "0")\"",
             "\"MTL_SHADER_VALIDATION\" = \"0\"",
+            "\"MTL_SHADER_CACHE_MODE\" = \"1\"",
+            "\"STAGING_AUDIO_DURATION\" = \"100000\"",
+            "\"WINEAUDIO_BUFFER_SIZE\" = \"4096\"",
             "\"WINE_HIGH_PERFORMANCE\" = \"1\""
         ]
 
@@ -530,63 +539,174 @@ struct WineBottleService: Sendable {
         return "Bottle at \(prefixURL.lastPathComponent) was cleanly stopped and reset."
     }
 
-    /// Sets or toggles Retina display mode in the prefix registry (HKCU\\Software\\Wine\\Mac Driver\\RetinaMode).
-    static func setRetinaMode(enabled: Bool, in prefixURL: URL) throws {
+    /// Synchronizes the prefix user registry (`user.reg`) with macOS native fullscreen Spaces, mouse confinement, DirectSound latency buffers, and Retina scaling.
+    @discardableResult
+    static func syncBottleRegistry(
+        prefixURL: URL,
+        retina: Bool = false
+    ) throws -> String {
         let userRegURL = prefixURL.appendingPathComponent("user.reg")
         var content = ""
         if FileManager.default.fileExists(atPath: userRegURL.path) {
             content = (try? String(contentsOf: userRegURL, encoding: .utf8)) ?? ""
         }
         if content.isEmpty {
-            content = "WINE REGISTRY Version 2\n"
+            content = """
+            WINE REGISTRY Version 2
+            ;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000
+
+            #arch=win64
+            """
         }
 
-        let targetValue = enabled ? "\"RetinaMode\"=\"y\"" : "\"RetinaMode\"=\"n\""
         var lines = content.components(separatedBy: "\n")
-        var inSection = false
-        var sectionFound = false
-        var retinaLineUpdated = false
-        var sectionHeaderIndex = -1
 
-        for i in 0..<lines.count {
-            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("[") && trimmed.contains("Software\\\\Wine\\\\Mac Driver") {
-                inSection = true
-                sectionFound = true
-                sectionHeaderIndex = i
-                continue
-            }
+        // 1. [Software\Wine\Mac Driver] - Native Spaces FullScreen, Mouse Capture & Confine, Retina
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\Mac Driver",
+            settings: [
+                "\"RetinaMode\"": retina ? "\"y\"" : "\"n\"",
+                "\"UseNativeFullScreen\"": "\"Y\"",
+                "\"CaptureMouseOnLaunch\"": "\"Y\"",
+                "\"CursorWarpMargin\"": "dword:00000001"
+            ],
+            into: lines
+        )
 
-            if inSection {
-                if trimmed.hasPrefix("[") {
-                    // Encountered next section without finding RetinaMode line
-                    inSection = false
-                    break
-                }
-                if trimmed.hasPrefix("\"RetinaMode\"=") {
-                    lines[i] = targetValue
-                    retinaLineUpdated = true
-                    break
-                }
-            }
-        }
+        // 2. [Software\Wine\DirectInput] - Force Cursor Center-Warp to prevent Mac Hotkeys/Hot Corners escape
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\DirectInput",
+            settings: [
+                "\"MouseWarpOverride\"": "\"force\""
+            ],
+            into: lines
+        )
 
-        if !retinaLineUpdated {
-            if sectionFound && sectionHeaderIndex >= 0 {
-                // Insert after the section header line without disturbing header timestamps
-                lines.insert(targetValue, at: sectionHeaderIndex + 1)
-            } else {
-                // Append section to the end
-                if !lines.isEmpty && !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
-                    lines.append("")
-                }
-                lines.append("[Software\\\\Wine\\\\Mac Driver]")
-                lines.append(targetValue)
-            }
-        }
+        // 3. [Software\Wine\DirectSound] - Stable audio buffers preventing underrun clicks/dropouts
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\DirectSound",
+            settings: [
+                "\"DefaultBitsPerSample\"": "dword:00000010",
+                "\"DefaultSampleRate\"": "dword:0000bb80",
+                "\"HelMargin\"": "dword:0000000a",
+                "\"MaxBuffers\"": "dword:00000040",
+                "\"SndQueueMax\"": "dword:00000020",
+                "\"SpeakerConfig\"": "dword:00000004"
+            ],
+            into: lines
+        )
+
+        // 4. [Software\Wine\Drivers] - Hardware drivers
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\Drivers",
+            settings: [
+                "\"Audio\"": "\"coreaudio\"",
+                "\"Graphics\"": "\"mac,metal\""
+            ],
+            into: lines
+        )
 
         let updatedContent = lines.joined(separator: "\n")
         try updatedContent.write(to: userRegURL, atomically: true, encoding: .utf8)
+        return updatedContent
+    }
+
+    /// Sets or toggles Retina display mode in the prefix registry (HKCU\\Software\\Wine\\Mac Driver\\RetinaMode).
+    static func setRetinaMode(enabled: Bool, in prefixURL: URL) throws {
+        try syncBottleRegistry(prefixURL: prefixURL, retina: enabled)
+    }
+
+    /// Checks if native macOS Spaces fullscreen is enabled in the prefix registry.
+    static func isNativeFullScreenEnabled(in prefixURL: URL) -> Bool {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
+        return content.contains("\"UseNativeFullScreen\"=\"Y\"") || content.contains("\"UseNativeFullScreen\"=\"y\"")
+    }
+
+    /// Checks if mouse capture on launch is enabled in the prefix registry.
+    static func isMouseCaptureEnabled(in prefixURL: URL) -> Bool {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
+        return content.contains("\"CaptureMouseOnLaunch\"=\"Y\"") || content.contains("\"CaptureMouseOnLaunch\"=\"y\"")
+    }
+
+    /// Checks if DirectInput mouse warp override is forced in the prefix registry.
+    static func isMouseWarpForced(in prefixURL: URL) -> Bool {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
+        return content.contains("\"MouseWarpOverride\"=\"force\"")
+    }
+
+    private static func mergeRegistrySection(
+        named sectionName: String,
+        settings: [String: String],
+        into existingLines: [String]
+    ) -> [String] {
+        var lines = existingLines
+        let targetPrefix = "[\(sectionName)"
+
+        var sectionHeaderIndex: Int?
+        var sectionEndIndex: Int?
+
+        for i in 0..<lines.count {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(targetPrefix) && trimmed.contains("]") {
+                sectionHeaderIndex = i
+                continue
+            }
+            if sectionHeaderIndex != nil {
+                if trimmed.hasPrefix("[") && trimmed.contains("]") {
+                    sectionEndIndex = i
+                    break
+                }
+            }
+        }
+
+        if let headerIdx = sectionHeaderIndex {
+            let endIdx = sectionEndIndex ?? lines.count
+            var existingKeyIndices: [String: Int] = [:]
+
+            for i in (headerIdx + 1)..<endIdx {
+                let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") {
+                    continue
+                }
+                if let eqIndex = trimmed.firstIndex(of: "=") {
+                    let key = String(trimmed[..<eqIndex]).trimmingCharacters(in: .whitespaces)
+                    existingKeyIndices[key.lowercased()] = i
+                }
+            }
+
+            var insertPos = headerIdx + 1
+            while insertPos < endIdx {
+                let t = lines[insertPos].trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("#") || t.hasPrefix(";") {
+                    insertPos += 1
+                } else {
+                    break
+                }
+            }
+
+            var offset = 0
+            for (key, val) in settings {
+                if let lineIdx = existingKeyIndices[key.lowercased()] {
+                    lines[lineIdx + offset] = "\(key)=\(val)"
+                } else {
+                    lines.insert("\(key)=\(val)", at: insertPos + offset)
+                    offset += 1
+                }
+            }
+        } else {
+            if !lines.isEmpty && !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
+                lines.append("")
+            }
+            lines.append("[\(sectionName)]")
+            for (key, val) in settings {
+                lines.append("\(key)=\(val)")
+            }
+        }
+
+        return lines
     }
 
     /// Checks if Retina mode is enabled in the prefix registry.

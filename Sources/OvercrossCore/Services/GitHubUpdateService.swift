@@ -63,7 +63,7 @@ public final class GitHubUpdateService: @unchecked Sendable {
     }
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.3"
     }
 
     public func checkForUpdates() async throws -> AppUpdateInfo? {
@@ -279,15 +279,29 @@ public final class GitHubUpdateService: @unchecked Sendable {
         done
 
         # In-place replace target application bundle
-        rm -rf "$TARGET"
-        /usr/bin/ditto "$STAGED" "$TARGET"
-        /usr/bin/xattr -cr "$TARGET" 2>/dev/null || true
+        FINAL_APP="$TARGET"
+        if rm -rf "$TARGET" 2>/dev/null && /usr/bin/ditto "$STAGED" "$TARGET" 2>/dev/null; then
+            /usr/bin/xattr -cr "$TARGET" 2>/dev/null || true
+            FINAL_APP="$TARGET"
+        elif /usr/bin/ditto "$STAGED" "$TARGET" 2>/dev/null; then
+            /usr/bin/xattr -cr "$TARGET" 2>/dev/null || true
+            FINAL_APP="$TARGET"
+        else
+            # Fallback if /Applications is read-only: copy to user's ~/Applications
+            USER_APPS="$HOME/Applications"
+            mkdir -p "$USER_APPS"
+            USER_TARGET="$USER_APPS/$(basename "$TARGET")"
+            rm -rf "$USER_TARGET" 2>/dev/null || true
+            /usr/bin/ditto "$STAGED" "$USER_TARGET" 2>/dev/null || true
+            /usr/bin/xattr -cr "$USER_TARGET" 2>/dev/null || true
+            FINAL_APP="$USER_TARGET"
+        fi
 
         # Clean staging directory
-        rm -rf "$CLEANUP"
+        rm -rf "$CLEANUP" 2>/dev/null || true
 
         # Relaunch updated application
-        /usr/bin/open "$TARGET"
+        /usr/bin/open "$FINAL_APP"
         """
         try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)

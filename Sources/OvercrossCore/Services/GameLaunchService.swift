@@ -311,11 +311,22 @@ struct GameLaunchService: Sendable {
             }
         }
 
+        // Disable NVIDIA proprietary driver hooks & Streamline plugins that stall Apple Silicon Metal pipelines
+        let nvidiaOverrides = "nvapi,nvapi64,sl.interposer,sl.common,sl.reflex,sl.deepdvc,sl.dlss_g,sl.pcl,GfeSDK=d"
+        if let existing = environment["WINEDLLOVERRIDES"], !existing.isEmpty {
+            if !existing.contains(nvidiaOverrides) {
+                environment["WINEDLLOVERRIDES"] = "\(existing);\(nvidiaOverrides)"
+            }
+        } else {
+            environment["WINEDLLOVERRIDES"] = nvidiaOverrides
+        }
+
         // Maximize Apple Silicon GPU Utilization & Pipeline Throughput
         // Disable Metal shader validation and capture layers that cause GPU pipeline stalls
         environment["MTL_SHADER_VALIDATION"] = "0"
         environment["MTL_DEBUG_LAYER"] = "0"
         environment["MTL_CAPTURE_ENABLED"] = "0"
+        environment["MTL_SHADER_CACHE_MODE"] = "1"
 
         // High-performance GPU scheduling & queue saturation
         environment["WINE_HIGH_PERFORMANCE"] = "1"
@@ -327,6 +338,11 @@ struct GameLaunchService: Sendable {
             environment["DXVK_ASYNC"] = "1"
             environment["DXVK_STATE_CACHE"] = "1"
         }
+
+        // Low-latency Audio Stability & Stutter Protection
+        environment["STAGING_AUDIO_DURATION"] = "100000"
+        environment["WINEAUDIO_BUFFER_SIZE"] = "4096"
+        environment["PULSE_LATENCY_MSEC"] = "60"
 
         // Retina / HiDPI Scaling
         let retinaEnabled: Bool
@@ -344,7 +360,9 @@ struct GameLaunchService: Sendable {
             environment.removeValue(forKey: "WINE_ENABLE_RETINA")
             environment.removeValue(forKey: "WINE_ALLOW_HIGHDPI")
         }
-        try? WineBottleService.setRetinaMode(enabled: retinaEnabled, in: prefix.url)
+
+        // Synchronize bottle registry (macOS Spaces Native Fullscreen, mouse confinement, DirectSound buffers, Retina)
+        _ = try? WineBottleService.syncBottleRegistry(prefixURL: prefix.url, retina: retinaEnabled)
 
         // Synchronize bottle configuration file (cxbottle.conf)
         WineBottleService.syncBottleConfiguration(

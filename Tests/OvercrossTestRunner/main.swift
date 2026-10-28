@@ -209,6 +209,12 @@ struct OvercrossTestApp {
         await runAsyncTest(name: "testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment") {
             try await $0.testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment()
         }
+        runTest(name: "testWineBottleRegistrySyncMacDriverAndDirectInput") { try $0.testWineBottleRegistrySyncMacDriverAndDirectInput() }
+        runTest(name: "testGameOptimizationNeutralizesStreamlineAndReflexLibraries") { try $0.testGameOptimizationNeutralizesStreamlineAndReflexLibraries() }
+        runTest(name: "testGameOptimizationEngineINIShaderPipelineCacheSettings") { try $0.testGameOptimizationEngineINIShaderPipelineCacheSettings() }
+        await runAsyncTest(name: "testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment") {
+            try await $0.testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment()
+        }
 
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

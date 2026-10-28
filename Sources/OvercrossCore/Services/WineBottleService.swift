@@ -561,12 +561,15 @@ struct WineBottleService: Sendable {
 
         var lines = content.components(separatedBy: "\n")
 
-        // 1. [Software\Wine\Mac Driver] - Safe Borderless FullScreen (avoids D3DMetal swapchain crashes), Mouse Capture & Confine, Retina
+        // 1. [Software\Wine\Mac Driver] - Native Spaces FullScreen, Mouse Capture & Confine, Pointer Grab, Retina
         lines = mergeRegistrySection(
             named: "Software\\\\Wine\\\\Mac Driver",
             settings: [
                 "\"RetinaMode\"": retina ? "\"y\"" : "\"n\"",
-                "\"UseNativeFullScreen\"": "\"N\"",
+                "\"UseNativeFullScreen\"": "\"Y\"",
+                "\"GrabFullscreen\"": "\"Y\"",
+                "\"GrabPointer\"": "\"Y\"",
+                "\"CaptureDisplaysForFullscreen\"": "\"Y\"",
                 "\"CaptureMouseOnLaunch\"": "\"Y\"",
                 "\"CursorWarpMargin\"": "dword:00000001"
             ],
@@ -634,7 +637,10 @@ struct WineBottleService: Sendable {
     static func isMouseCaptureEnabled(in prefixURL: URL) -> Bool {
         let userRegURL = prefixURL.appendingPathComponent("user.reg")
         guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
-        return content.contains("\"CaptureMouseOnLaunch\"=\"Y\"") || content.contains("\"CaptureMouseOnLaunch\"=\"y\"")
+        return content.contains("\"CaptureMouseOnLaunch\"=\"Y\"") ||
+               content.contains("\"CaptureMouseOnLaunch\"=\"y\"") ||
+               content.contains("\"GrabFullscreen\"=\"Y\"") ||
+               content.contains("\"GrabFullscreen\"=\"y\"")
     }
 
     /// Checks if DirectInput mouse warp override is forced in the prefix registry.

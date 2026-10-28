@@ -248,6 +248,8 @@ struct GameOptimizationService: Sendable {
                 "r.GTSyncType": "1",
                 "r.OneFrameThreadLag": "1",
                 "r.FinishCurrentFrame": "0",
+                "r.VSync": "0",
+                "t.MaxFPS": "120",
                 "gc.TimeBetweenPurgingPendingKillObjects": "30"
             ],
             into: content

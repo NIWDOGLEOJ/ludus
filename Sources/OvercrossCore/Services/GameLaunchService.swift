@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 struct GameLaunchOutcome: Sendable {
     let exitStatus: Int32
@@ -410,6 +413,14 @@ struct GameLaunchService: Sendable {
         } else {
             workingDir = game.installationURL ?? launchExecutableURL.deletingLastPathComponent()
         }
+        // Lock/snap hardware cursor to screen center to avoid triggering macOS Hot Corners on startup
+        #if canImport(CoreGraphics)
+        let mainDisplay = CGMainDisplayID()
+        let displayBounds = CGDisplayBounds(mainDisplay)
+        let centerPoint = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
+        CGWarpMouseCursorPosition(centerPoint)
+        #endif
+
         var outcome = try await launchProcess(
             executableURL: runtimeExecutableURL,
             arguments: arguments,

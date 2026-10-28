@@ -2621,6 +2621,8 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         let updated = try String(contentsOf: iniURL, encoding: .utf8)
         XCTAssertTrue(updated.contains("r.CustomUserOption=999"))
         XCTAssertTrue(updated.contains("r.Streaming.PoolSize=4096"))
+        XCTAssertTrue(updated.contains("r.VSync=0"))
+        XCTAssertTrue(updated.contains("t.MaxFPS=120"))
         XCTAssertTrue(updated.contains("SomeKey=SomeValue"))
     }
 
@@ -2700,13 +2702,16 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         // Run bottle registry synchronization
         try WineBottleService.syncBottleRegistry(prefixURL: root, retina: false)
 
-        XCTAssertTrue(WineBottleService.isSafeBorderlessFullScreenEnabled(in: root))
+        XCTAssertTrue(WineBottleService.isNativeFullScreenEnabled(in: root))
         XCTAssertTrue(WineBottleService.isMouseCaptureEnabled(in: root))
         XCTAssertTrue(WineBottleService.isMouseWarpForced(in: root))
 
         let content = try String(contentsOf: userRegURL, encoding: .utf8)
         XCTAssertTrue(content.contains("[Software\\\\Wine\\\\Mac Driver] 1729000000"))
-        XCTAssertTrue(content.contains("\"UseNativeFullScreen\"=\"N\""))
+        XCTAssertTrue(content.contains("\"UseNativeFullScreen\"=\"Y\""))
+        XCTAssertTrue(content.contains("\"GrabFullscreen\"=\"Y\""))
+        XCTAssertTrue(content.contains("\"GrabPointer\"=\"Y\""))
+        XCTAssertTrue(content.contains("\"CaptureDisplaysForFullscreen\"=\"Y\""))
         XCTAssertTrue(content.contains("\"CaptureMouseOnLaunch\"=\"Y\""))
         XCTAssertTrue(content.contains("\"CursorWarpMargin\"=dword:00000001"))
         XCTAssertTrue(content.contains("[Software\\\\Wine\\\\DirectInput]"))

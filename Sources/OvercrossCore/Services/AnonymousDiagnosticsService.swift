@@ -104,7 +104,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
     }
 
     public static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.5"
     }
 
     // MARK: - Log Sanitization (PII Scrubbing)

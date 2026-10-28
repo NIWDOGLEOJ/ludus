@@ -561,12 +561,12 @@ struct WineBottleService: Sendable {
 
         var lines = content.components(separatedBy: "\n")
 
-        // 1. [Software\Wine\Mac Driver] - Native Spaces FullScreen, Mouse Capture & Confine, Retina
+        // 1. [Software\Wine\Mac Driver] - Safe Borderless FullScreen (avoids D3DMetal swapchain crashes), Mouse Capture & Confine, Retina
         lines = mergeRegistrySection(
             named: "Software\\\\Wine\\\\Mac Driver",
             settings: [
                 "\"RetinaMode\"": retina ? "\"y\"" : "\"n\"",
-                "\"UseNativeFullScreen\"": "\"Y\"",
+                "\"UseNativeFullScreen\"": "\"N\"",
                 "\"CaptureMouseOnLaunch\"": "\"Y\"",
                 "\"CursorWarpMargin\"": "dword:00000001"
             ],
@@ -621,6 +621,13 @@ struct WineBottleService: Sendable {
         let userRegURL = prefixURL.appendingPathComponent("user.reg")
         guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
         return content.contains("\"UseNativeFullScreen\"=\"Y\"") || content.contains("\"UseNativeFullScreen\"=\"y\"")
+    }
+
+    /// Checks if safe borderless fullscreen mode is enabled in the prefix registry (avoids D3DMetal swapchain crashes).
+    static func isSafeBorderlessFullScreenEnabled(in prefixURL: URL) -> Bool {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
+        return content.contains("\"UseNativeFullScreen\"=\"N\"") || content.contains("\"UseNativeFullScreen\"=\"n\"")
     }
 
     /// Checks if mouse capture on launch is enabled in the prefix registry.

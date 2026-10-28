@@ -30,10 +30,54 @@ struct GameOptimizationService: Sendable {
     /// Known problematic libraries bundled in Windows games that cause thread spin-locks, CPU starvation, or crashes on Apple Silicon Wine.
     static let problematicLibraries: Set<String> = [
         "cchromaeditorlibrary64.dll",
-        "cchromaeditorlibrary.dll",
-        "sl.interposer.dll",
-        "sl.reflex.dll"
+        "cchromaeditorlibrary.dll"
     ]
+
+    /// Essential game libraries that must never remain renamed to `.bak` as games require them to bootstrap.
+    static let essentialLibrariesToRestore: Set<String> = [
+        "sl.interposer.dll",
+        "sl.reflex.dll",
+        "sl.common.dll",
+        "sl.deepdvc.dll",
+        "sl.dlss_g.dll",
+        "sl.pcl.dll",
+        "gfesdk.dll"
+    ]
+
+    /// Scans the game installation directory and automatically restores any essential libraries previously renamed to `.dll.bak`.
+    @discardableResult
+    func restoreEssentialLibraries(at installationURL: URL) -> [String] {
+        guard FileManager.default.fileExists(atPath: installationURL.path) else { return [] }
+
+        var restored: [String] = []
+        let enumerator = FileManager.default.enumerator(
+            at: installationURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        while let fileURL = enumerator?.nextObject() as? URL {
+            let filename = fileURL.lastPathComponent.lowercased()
+            if filename.hasSuffix(".bak") {
+                let originalStem = fileURL.deletingPathExtension().lastPathComponent.lowercased()
+                if Self.essentialLibrariesToRestore.contains(originalStem) {
+                    let targetURL = fileURL.deletingPathExtension()
+                    do {
+                        if FileManager.default.fileExists(atPath: targetURL.path) {
+                            try FileManager.default.removeItem(at: fileURL)
+                            restored.append(targetURL.lastPathComponent)
+                        } else {
+                            try FileManager.default.moveItem(at: fileURL, to: targetURL)
+                            restored.append(targetURL.lastPathComponent)
+                        }
+                    } catch {
+                        // Ignore move errors
+                    }
+                }
+            }
+        }
+        return restored
+    }
 
     /// Recursively scans the game installation directory and neutralizes known problematic DLLs by safely renaming them to `.dll.bak`.
     @discardableResult
@@ -173,6 +217,23 @@ struct GameOptimizationService: Sendable {
 
         var content = (try? String(contentsOf: iniURL, encoding: .utf8)) ?? ""
 
+        // Scrub any unsafe shader compilation directives that cause Apple Silicon Metal startup crashes (status 3)
+        content = removeSettings(
+            keys: [
+                "r.CreateShadersOnLoad",
+                "r.ShaderPipelineCache.BatchSize",
+                "r.ShaderPipelineCache.BackgroundBatchSize",
+                "r.ShaderPipelineCache.PreCompileBatchTime",
+                "r.ShaderPipelineCache.ReportPSO",
+                "r.ShaderPipelineCache.Enabled",
+                "r.D3D12.TexturePoolSize",
+                "r.Shaders.Optimize",
+                "r.XGEShaderCompile"
+            ],
+            from: "SystemSettings",
+            in: content
+        )
+
         // Merge SystemSettings
         content = mergeSection(
             named: "SystemSettings",
@@ -187,15 +248,6 @@ struct GameOptimizationService: Sendable {
                 "r.GTSyncType": "1",
                 "r.OneFrameThreadLag": "1",
                 "r.FinishCurrentFrame": "0",
-                "r.CreateShadersOnLoad": "1",
-                "r.Shaders.Optimize": "1",
-                "r.ShaderPipelineCache.Enabled": "1",
-                "r.ShaderPipelineCache.ReportPSO": "0",
-                "r.ShaderPipelineCache.BatchSize": "50",
-                "r.ShaderPipelineCache.BackgroundBatchSize": "50",
-                "r.ShaderPipelineCache.PreCompileBatchTime": "0",
-                "r.D3D12.TexturePoolSize": "\(poolSizeMB)",
-                "r.XGEShaderCompile": "0",
                 "gc.TimeBetweenPurgingPendingKillObjects": "30"
             ],
             into: content
@@ -227,9 +279,13 @@ struct GameOptimizationService: Sendable {
     ) -> GameOptimizationReport {
         var details: [String] = []
 
-        // 1. Problematic DLL neutralization
+        // 1. Problematic DLL neutralization & essential library restoration
         var neutralized: [String] = []
         if let installURL = game.installationURL {
+            let restored = restoreEssentialLibraries(at: installURL)
+            if !restored.isEmpty {
+                details.append("Restored \(restored.joined(separator: ", "))")
+            }
             neutralized = neutralizeProblematicLibraries(at: installURL)
             if !neutralized.isEmpty {
                 details.append("Neutralized \(neutralized.joined(separator: ", ")) (prevented CPU spinlock)")
@@ -254,6 +310,48 @@ struct GameOptimizationService: Sendable {
             streamingPoolMB: poolSize,
             details: details
         )
+    }
+
+    private func removeSettings(
+        keys: [String],
+        from sectionName: String,
+        in iniContent: String
+    ) -> String {
+        let lines = iniContent.components(separatedBy: "\n")
+        let sectionHeader = "[\(sectionName)]".lowercased()
+        let lowerKeys = Set(keys.map { $0.lowercased() })
+
+        var sectionStartIndex: Int?
+        var sectionEndIndex: Int?
+
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.lowercased() == sectionHeader {
+                sectionStartIndex = index
+            } else if sectionStartIndex != nil && trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                sectionEndIndex = index
+                break
+            }
+        }
+
+        guard let start = sectionStartIndex else { return iniContent }
+        let end = sectionEndIndex ?? lines.count
+
+        var filteredLines: [String] = []
+        for i in 0..<lines.count {
+            if i > start && i < end {
+                let line = lines[i]
+                if let eqIndex = line.firstIndex(of: "=") {
+                    let key = String(line[..<eqIndex]).trimmingCharacters(in: .whitespaces).lowercased()
+                    if lowerKeys.contains(key) {
+                        continue
+                    }
+                }
+            }
+            filteredLines.append(lines[i])
+        }
+
+        return filteredLines.joined(separator: "\n")
     }
 
     private func mergeSection(

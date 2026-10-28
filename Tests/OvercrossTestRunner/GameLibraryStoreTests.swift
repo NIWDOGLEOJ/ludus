@@ -2700,13 +2700,13 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         // Run bottle registry synchronization
         try WineBottleService.syncBottleRegistry(prefixURL: root, retina: false)
 
-        XCTAssertTrue(WineBottleService.isNativeFullScreenEnabled(in: root))
+        XCTAssertTrue(WineBottleService.isSafeBorderlessFullScreenEnabled(in: root))
         XCTAssertTrue(WineBottleService.isMouseCaptureEnabled(in: root))
         XCTAssertTrue(WineBottleService.isMouseWarpForced(in: root))
 
         let content = try String(contentsOf: userRegURL, encoding: .utf8)
         XCTAssertTrue(content.contains("[Software\\\\Wine\\\\Mac Driver] 1729000000"))
-        XCTAssertTrue(content.contains("\"UseNativeFullScreen\"=\"Y\""))
+        XCTAssertTrue(content.contains("\"UseNativeFullScreen\"=\"N\""))
         XCTAssertTrue(content.contains("\"CaptureMouseOnLaunch\"=\"Y\""))
         XCTAssertTrue(content.contains("\"CursorWarpMargin\"=dword:00000001"))
         XCTAssertTrue(content.contains("[Software\\\\Wine\\\\DirectInput]"))
@@ -2716,37 +2716,53 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(content.contains("\"DefaultSampleRate\"=dword:0000bb80"))
     }
 
-    func testGameOptimizationNeutralizesStreamlineAndReflexLibraries() throws {
+    func testGameOptimizationNeutralizesProblematicLibrariesAndRestoresEssential() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LudusStreamlineTest-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("LudusRestoreTest-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let streamlineDir = root.appendingPathComponent("Engine/Plugins/Runtime/Nvidia/Streamline/Binaries/ThirdParty/Win64", isDirectory: true)
         try FileManager.default.createDirectory(at: streamlineDir, withIntermediateDirectories: true)
-        let interposerDLL = streamlineDir.appendingPathComponent("sl.interposer.dll")
-        let reflexDLL = streamlineDir.appendingPathComponent("sl.reflex.dll")
-        let harmlessDLL = streamlineDir.appendingPathComponent("innocent.dll")
+        let interposerBak = streamlineDir.appendingPathComponent("sl.interposer.dll.bak")
+        let reflexBak = streamlineDir.appendingPathComponent("sl.reflex.dll.bak")
+        let chromaDLL = streamlineDir.appendingPathComponent("CChromaEditorLibrary64.dll")
 
-        try Data([1, 2, 3]).write(to: interposerDLL)
-        try Data([4, 5, 6]).write(to: reflexDLL)
-        try Data([7, 8, 9]).write(to: harmlessDLL)
+        try Data([1, 2, 3]).write(to: interposerBak)
+        try Data([4, 5, 6]).write(to: reflexBak)
+        try Data([7, 8, 9]).write(to: chromaDLL)
 
         let service = GameOptimizationService()
-        let neutralized = service.neutralizeProblematicLibraries(at: root)
 
-        XCTAssertTrue(neutralized.contains("sl.interposer.dll"))
-        XCTAssertTrue(neutralized.contains("sl.reflex.dll"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: interposerDLL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: reflexDLL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: streamlineDir.appendingPathComponent("sl.interposer.dll.bak").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: streamlineDir.appendingPathComponent("sl.reflex.dll.bak").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: harmlessDLL.path))
+        // 1. Restore essential libraries needed by game bootstrap
+        let restored = service.restoreEssentialLibraries(at: root)
+        XCTAssertTrue(restored.contains("sl.interposer.dll"))
+        XCTAssertTrue(restored.contains("sl.reflex.dll"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: streamlineDir.appendingPathComponent("sl.interposer.dll").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: streamlineDir.appendingPathComponent("sl.reflex.dll").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: interposerBak.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reflexBak.path))
+
+        // 2. Neutralize only CPU spinlock libraries (Chroma), leaving Streamline intact
+        let neutralized = service.neutralizeProblematicLibraries(at: root)
+        XCTAssertEqual(neutralized, ["CChromaEditorLibrary64.dll"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: streamlineDir.appendingPathComponent("sl.interposer.dll").path))
     }
 
-    func testGameOptimizationEngineINIShaderPipelineCacheSettings() throws {
+    func testGameOptimizationEngineINISettingsSafeForUnifiedMemory() throws {
         let prefixDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("LudusShaderCacheTest-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: prefixDir) }
+
+        let iniURL = prefixDir.appendingPathComponent("drive_c/users/crossover/AppData/Local/HogwartsLegacy/Saved/Config/WindowsNoEditor/Engine.ini")
+        try FileManager.default.createDirectory(at: iniURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        // Seed with hazardous startup compilation directive from previous build
+        let initialContent = """
+        [SystemSettings]
+        r.CreateShadersOnLoad=1
+        r.ShaderPipelineCache.BatchSize=50
+        """
+        try initialContent.write(to: iniURL, atomically: true, encoding: .utf8)
 
         let service = GameOptimizationService()
         let applied = service.optimizeEngineINI(
@@ -2757,31 +2773,28 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         )
         XCTAssertTrue(applied)
 
-        let iniURL = prefixDir.appendingPathComponent("drive_c/users/crossover/AppData/Local/HogwartsLegacy/Saved/Config/WindowsNoEditor/Engine.ini")
         let content = try String(contentsOf: iniURL, encoding: .utf8)
-        XCTAssertTrue(content.contains("r.CreateShadersOnLoad=1"))
-        XCTAssertTrue(content.contains("r.Shaders.Optimize=1"))
-        XCTAssertTrue(content.contains("r.ShaderPipelineCache.Enabled=1"))
-        XCTAssertTrue(content.contains("r.ShaderPipelineCache.ReportPSO=0"))
-        XCTAssertTrue(content.contains("r.ShaderPipelineCache.BatchSize=50"))
-        XCTAssertTrue(content.contains("r.ShaderPipelineCache.BackgroundBatchSize=50"))
-        XCTAssertTrue(content.contains("r.ShaderPipelineCache.PreCompileBatchTime=0"))
+        // Ensure hazardous directive was scrubbed
+        XCTAssertFalse(content.contains("r.CreateShadersOnLoad=1"))
+        XCTAssertFalse(content.contains("r.ShaderPipelineCache.BatchSize=50"))
+        // Ensure safe unified memory streaming settings applied
+        XCTAssertTrue(content.contains("r.Streaming.PoolSize=2048"))
         XCTAssertTrue(content.contains("r.Streaming.UseFixedPoolSize=1"))
         XCTAssertTrue(content.contains("r.Streaming.HLODStrategy=2"))
         XCTAssertTrue(content.contains("r.Streaming.DefragDynamicBounds=1"))
-        XCTAssertTrue(content.contains("r.D3D12.TexturePoolSize=2048"))
+        XCTAssertTrue(content.contains("gc.TimeBetweenPurgingPendingKillObjects=30"))
     }
 
     func testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LudusNvidiaOverrideHarness-\(UUID().uuidString)")
+            .appendingPathComponent("LudusPerfHarness-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
         try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
 
         let executableURL = root.appendingPathComponent("game.exe")
-        try "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$WINEDLLOVERRIDES\" \"$MTL_SHADER_CACHE_MODE\" \"$STAGING_AUDIO_DURATION\" \"$WINEAUDIO_BUFFER_SIZE\"\n"
+        try "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$MTL_SHADER_CACHE_MODE\" \"$STAGING_AUDIO_DURATION\" \"$WINEAUDIO_BUFFER_SIZE\"\n"
             .write(to: executableURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
 
@@ -2817,11 +2830,10 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
 
         let output = outcome.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = output.components(separatedBy: "|")
-        XCTAssertEqual(parts.count, 4)
-        XCTAssertTrue(parts[0].contains("nvapi,nvapi64,sl.interposer,sl.common,sl.reflex,sl.deepdvc,sl.dlss_g,sl.pcl,GfeSDK=d"))
-        XCTAssertEqual(parts[1], "1")
-        XCTAssertEqual(parts[2], "100000")
-        XCTAssertEqual(parts[3], "4096")
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(parts[0], "1")
+        XCTAssertEqual(parts[1], "100000")
+        XCTAssertEqual(parts[2], "4096")
         XCTAssertEqual(outcome.exitStatus, 0)
     }
 }

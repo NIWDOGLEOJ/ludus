@@ -63,7 +63,7 @@ public final class GitHubUpdateService: @unchecked Sendable {
     }
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.4"
     }
 
     public func checkForUpdates() async throws -> AppUpdateInfo? {

@@ -311,16 +311,6 @@ struct GameLaunchService: Sendable {
             }
         }
 
-        // Disable NVIDIA proprietary driver hooks & Streamline plugins that stall Apple Silicon Metal pipelines
-        let nvidiaOverrides = "nvapi,nvapi64,sl.interposer,sl.common,sl.reflex,sl.deepdvc,sl.dlss_g,sl.pcl,GfeSDK=d"
-        if let existing = environment["WINEDLLOVERRIDES"], !existing.isEmpty {
-            if !existing.contains(nvidiaOverrides) {
-                environment["WINEDLLOVERRIDES"] = "\(existing);\(nvidiaOverrides)"
-            }
-        } else {
-            environment["WINEDLLOVERRIDES"] = nvidiaOverrides
-        }
-
         // Maximize Apple Silicon GPU Utilization & Pipeline Throughput
         // Disable Metal shader validation and capture layers that cause GPU pipeline stalls
         environment["MTL_SHADER_VALIDATION"] = "0"

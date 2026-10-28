@@ -210,8 +210,8 @@ struct OvercrossTestApp {
             try await $0.testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment()
         }
         runTest(name: "testWineBottleRegistrySyncMacDriverAndDirectInput") { try $0.testWineBottleRegistrySyncMacDriverAndDirectInput() }
-        runTest(name: "testGameOptimizationNeutralizesStreamlineAndReflexLibraries") { try $0.testGameOptimizationNeutralizesStreamlineAndReflexLibraries() }
-        runTest(name: "testGameOptimizationEngineINIShaderPipelineCacheSettings") { try $0.testGameOptimizationEngineINIShaderPipelineCacheSettings() }
+        runTest(name: "testGameOptimizationNeutralizesProblematicLibrariesAndRestoresEssential") { try $0.testGameOptimizationNeutralizesProblematicLibrariesAndRestoresEssential() }
+        runTest(name: "testGameOptimizationEngineINISettingsSafeForUnifiedMemory") { try $0.testGameOptimizationEngineINISettingsSafeForUnifiedMemory() }
         await runAsyncTest(name: "testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment") {
             try await $0.testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment()
         }

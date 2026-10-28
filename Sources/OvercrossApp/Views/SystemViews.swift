@@ -655,7 +655,15 @@ struct SettingsView: View {
                         }
                     }
                     Spacer()
-                    if appModel.isCheckingForUpdates {
+                    if appModel.isDownloadingUpdate {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Installing update…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if appModel.isCheckingForUpdates {
                         ProgressView()
                             .scaleEffect(0.8)
                     } else if appModel.availableUpdate != nil {

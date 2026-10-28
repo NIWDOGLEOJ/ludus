@@ -63,7 +63,7 @@ public final class GitHubUpdateService: @unchecked Sendable {
     }
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.2"
     }
 
     public func checkForUpdates() async throws -> AppUpdateInfo? {
@@ -169,5 +169,147 @@ public final class GitHubUpdateService: @unchecked Sendable {
             NSWorkspace.shared.open(destinationDMG)
         }
         #endif
+    }
+
+    /// Automatically downloads the DMG, extracts the new application, replaces the old installation in-place, and relaunches without requiring manual file handling.
+    public func downloadAndApplyUpdate(
+        from url: URL,
+        progress: (@Sendable (Double) -> Void)? = nil,
+        targetAppURL: URL? = nil,
+        terminateCurrentApp: Bool = true
+    ) async throws {
+        let (tempLocalURL, response) = try await URLSession.shared.download(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw UpdateError.downloadFailed("Server returned invalid HTTP status")
+        }
+
+        let fileManager = FileManager.default
+        let stagingRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("LudusUpdate-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        let destinationDMG = stagingRoot.appendingPathComponent("Ludus.dmg")
+        try fileManager.moveItem(at: tempLocalURL, to: destinationDMG)
+
+        try await applyDownloadedDMG(
+            dmgURL: destinationDMG,
+            stagingRoot: stagingRoot,
+            targetAppURL: targetAppURL,
+            terminateCurrentApp: terminateCurrentApp
+        )
+    }
+
+    /// Mounts, stages, extracts, and swaps an application update from a downloaded DMG.
+    public func applyDownloadedDMG(
+        dmgURL: URL,
+        stagingRoot: URL,
+        targetAppURL: URL? = nil,
+        terminateCurrentApp: Bool = true
+    ) async throws {
+        let fileManager = FileManager.default
+        let mountPoint = stagingRoot.appendingPathComponent("mount", isDirectory: true)
+        try fileManager.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+
+        // 1. Mount the DMG silently without opening Finder
+        let mountResult = try ProcessRunner().run(
+            "/usr/bin/hdiutil",
+            arguments: ["attach", dmgURL.path, "-nobrowse", "-readonly", "-mountpoint", mountPoint.path]
+        )
+        guard mountResult.status == 0 else {
+            try? fileManager.removeItem(at: stagingRoot)
+            throw UpdateError.downloadFailed("Could not mount update disk image: \(mountResult.errorOutput)")
+        }
+
+        defer {
+            _ = try? ProcessRunner().run("/usr/bin/hdiutil", arguments: ["detach", mountPoint.path, "-force"])
+        }
+
+        // 2. Locate Ludus.app inside the mounted volume
+        let candidateApps = (try? fileManager.contentsOfDirectory(at: mountPoint, includingPropertiesForKeys: nil)) ?? []
+        guard let sourceApp = candidateApps.first(where: { $0.lastPathComponent == "Ludus.app" || $0.pathExtension == "app" }) else {
+            try? fileManager.removeItem(at: stagingRoot)
+            throw UpdateError.downloadFailed("The update disk image does not contain Ludus.app.")
+        }
+
+        // 3. Stage the extracted application
+        let stagedApp = stagingRoot.appendingPathComponent("Staged/Ludus.app")
+        try fileManager.createDirectory(at: stagedApp.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let copyResult = try ProcessRunner().run(
+            "/usr/bin/ditto",
+            arguments: [sourceApp.path, stagedApp.path]
+        )
+        guard copyResult.status == 0 else {
+            try? fileManager.removeItem(at: stagingRoot)
+            throw UpdateError.downloadFailed("Failed to extract update package: \(copyResult.errorOutput)")
+        }
+
+        // 4. Detach DMG early since files are fully staged
+        _ = try? ProcessRunner().run("/usr/bin/hdiutil", arguments: ["detach", mountPoint.path, "-force"])
+        try? fileManager.removeItem(at: dmgURL)
+
+        // Strip Gatekeeper quarantine on staged files
+        _ = try? ProcessRunner().run("/usr/bin/xattr", arguments: ["-cr", stagedApp.path])
+
+        // 5. Determine destination target
+        let resolvedTarget: URL
+        if let targetAppURL {
+            resolvedTarget = targetAppURL
+        } else {
+            let bundle = Bundle.main.bundleURL
+            if bundle.pathExtension.lowercased() == "app" {
+                resolvedTarget = bundle
+            } else {
+                resolvedTarget = URL(fileURLWithPath: "/Applications/Ludus.app")
+            }
+        }
+
+        // 6. Generate and launch the detached swap and relaunch script
+        let scriptURL = stagingRoot.appendingPathComponent("apply_update.sh")
+        let scriptContent = """
+        #!/bin/sh
+        PID="$1"
+        TARGET="$2"
+        STAGED="$3"
+        CLEANUP="$4"
+
+        # Wait for old app PID to exit cleanly (max 10s)
+        COUNT=0
+        while kill -0 "$PID" 2>/dev/null && [ $COUNT -lt 50 ]; do
+            sleep 0.2
+            COUNT=$((COUNT + 1))
+        done
+
+        # In-place replace target application bundle
+        rm -rf "$TARGET"
+        /usr/bin/ditto "$STAGED" "$TARGET"
+        /usr/bin/xattr -cr "$TARGET" 2>/dev/null || true
+
+        # Clean staging directory
+        rm -rf "$CLEANUP"
+
+        # Relaunch updated application
+        /usr/bin/open "$TARGET"
+        """
+        try scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let helperProcess = Process()
+        helperProcess.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helperProcess.arguments = [
+            scriptURL.path,
+            String(ProcessInfo.processInfo.processIdentifier),
+            resolvedTarget.path,
+            stagedApp.path,
+            stagingRoot.path
+        ]
+        try helperProcess.run()
+
+        // 7. Terminate current application if requested
+        if terminateCurrentApp {
+            #if canImport(AppKit)
+            DispatchQueue.main.async {
+                NSApplication.shared.terminate(nil)
+            }
+            #endif
+        }
     }
 }

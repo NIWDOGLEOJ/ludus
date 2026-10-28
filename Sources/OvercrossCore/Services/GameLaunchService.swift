@@ -194,10 +194,11 @@ struct GameLaunchService: Sendable {
         } else if let custom = game.customEnvironment["WINEMSYNC"] {
             msync = (custom == "1" || custom.lowercased() == "true")
         } else {
-            msync = appSettings?.msyncEnabled ?? false
+            msync = appSettings?.msyncEnabled ?? true
         }
         if msync {
             environment["WINEMSYNC"] = "1"
+            environment.removeValue(forKey: "WINEESYNC")
         } else {
             environment.removeValue(forKey: "WINEMSYNC")
         }
@@ -310,6 +311,23 @@ struct GameLaunchService: Sendable {
             }
         }
 
+        // Maximize Apple Silicon GPU Utilization & Pipeline Throughput
+        // Disable Metal shader validation and capture layers that cause GPU pipeline stalls
+        environment["MTL_SHADER_VALIDATION"] = "0"
+        environment["MTL_DEBUG_LAYER"] = "0"
+        environment["MTL_CAPTURE_ENABLED"] = "0"
+
+        // High-performance GPU scheduling & queue saturation
+        environment["WINE_HIGH_PERFORMANCE"] = "1"
+        environment["WINE_D3D_GPU_PRIORITY"] = "high"
+        if backend == .d3dmetal || backend == .automatic {
+            environment["DX12_MAX_FRAME_LATENCY"] = "2"
+            environment["D3DMETAL_SUBMISSION_MODE"] = "immediate"
+        } else if backend == .dxvk {
+            environment["DXVK_ASYNC"] = "1"
+            environment["DXVK_STATE_CACHE"] = "1"
+        }
+
         // Retina / HiDPI Scaling
         let retinaEnabled: Bool
         if let explicit = game.retinaScalingEnabled {
@@ -344,6 +362,12 @@ struct GameLaunchService: Sendable {
         var diagnosticNotes: [String] = []
         if launchExecutableURL != executableURL {
             diagnosticNotes.append("Using nested Windows executable (\(launchExecutableURL.lastPathComponent)).")
+        }
+
+        // Automatic Game Optimization (problematic DLL neutralization & memory/streaming tuning)
+        let optimizationReport = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
+        if let summary = optimizationReport.summary {
+            diagnosticNotes.append(summary)
         }
         // A 32-bit game can run inside a win64 WoW64 prefix. Select the
         // CoreAudio repair from the executable's PE machine type, not only
@@ -495,6 +519,13 @@ struct GameLaunchService: Sendable {
         return try await withTaskCancellationHandler(operation: {
             try await Task.detached(priority: .userInitiated) {
             let process = Process()
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                reason: "Ludus Game Execution"
+            )
+            defer {
+                ProcessInfo.processInfo.endActivity(activity)
+            }
             let temporaryDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("LudusLaunch-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)

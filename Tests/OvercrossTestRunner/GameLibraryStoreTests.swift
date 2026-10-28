@@ -2544,5 +2544,140 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(history.count, 1)
         XCTAssertEqual(history.first?.component, "BottleManager")
     }
+
+    func testGameOptimizationNeutralizesProblematicLibraries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusOptimizationTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let pluginDir = root.appendingPathComponent("Phoenix/Plugins/ChromaSDKPlugin/Binaries/Win64", isDirectory: true)
+        try FileManager.default.createDirectory(at: pluginDir, withIntermediateDirectories: true)
+        let problematicDLL = pluginDir.appendingPathComponent("CChromaEditorLibrary64.dll")
+        let harmlessDLL = pluginDir.appendingPathComponent("OtherPlugin.dll")
+
+        try Data([1, 2, 3]).write(to: problematicDLL)
+        try Data([4, 5, 6]).write(to: harmlessDLL)
+
+        let service = GameOptimizationService()
+        let neutralized = service.neutralizeProblematicLibraries(at: root)
+
+        XCTAssertEqual(neutralized, ["CChromaEditorLibrary64.dll"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: problematicDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("CChromaEditorLibrary64.dll.bak").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: harmlessDLL.path))
+    }
+
+    func testGameOptimizationEngineINISettings16GB() throws {
+        let prefixDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusPrefixTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: prefixDir) }
+
+        let service = GameOptimizationService()
+        let ram16GB: UInt64 = 16 * 1024 * 1024 * 1024
+        let pool = service.optimalStreamingPoolMB(totalRAMBytes: ram16GB)
+        XCTAssertEqual(pool, 2048)
+
+        let applied = service.optimizeEngineINI(
+            prefixURL: prefixDir,
+            gameTitle: "Hogwarts Legacy",
+            executableURL: URL(fileURLWithPath: "C:/Games/Hogwarts Legacy/HogwartsLegacy.exe"),
+            poolSizeMB: pool
+        )
+        XCTAssertTrue(applied)
+
+        let iniURL = prefixDir.appendingPathComponent("drive_c/users/crossover/AppData/Local/HogwartsLegacy/Saved/Config/WindowsNoEditor/Engine.ini")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: iniURL.path))
+        let content = try String(contentsOf: iniURL, encoding: .utf8)
+        XCTAssertTrue(content.contains("[SystemSettings]"))
+        XCTAssertTrue(content.contains("r.Streaming.PoolSize=2048"))
+        XCTAssertTrue(content.contains("r.TextureStreaming=1"))
+        XCTAssertTrue(content.contains("r.Streaming.LimitPoolSizeToVRAM=1"))
+        XCTAssertTrue(content.contains("gc.TimeBetweenPurgingPendingKillObjects=30"))
+        XCTAssertTrue(content.contains("[ConsoleVariables]"))
+        XCTAssertTrue(content.contains("AllowAsyncRenderThreadUpdates=1"))
+    }
+
+    func testGameOptimizationEngineINIPreservesExistingKeys() throws {
+        let prefixDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusPrefixTestPreserve-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: prefixDir) }
+
+        let iniURL = prefixDir.appendingPathComponent("drive_c/users/crossover/AppData/Local/CustomGame/Saved/Config/WindowsNoEditor/Engine.ini")
+        try FileManager.default.createDirectory(at: iniURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let initialContent = """
+        [SystemSettings]
+        r.CustomUserOption=999
+        r.Streaming.PoolSize=1000
+
+        [MyCustomSection]
+        SomeKey=SomeValue
+        """
+        try initialContent.write(to: iniURL, atomically: true, encoding: .utf8)
+
+        let service = GameOptimizationService()
+        _ = service.applyEngineINISettings(to: iniURL, poolSizeMB: 4096)
+
+        let updated = try String(contentsOf: iniURL, encoding: .utf8)
+        XCTAssertTrue(updated.contains("r.CustomUserOption=999"))
+        XCTAssertTrue(updated.contains("r.Streaming.PoolSize=4096"))
+        XCTAssertTrue(updated.contains("SomeKey=SomeValue"))
+    }
+
+    func testOptimalStreamingPoolMBForDifferentRAMSizes() {
+        let service = GameOptimizationService()
+        XCTAssertEqual(service.optimalStreamingPoolMB(totalRAMBytes: 8 * 1024 * 1024 * 1024), 2048)
+        XCTAssertEqual(service.optimalStreamingPoolMB(totalRAMBytes: 16 * 1024 * 1024 * 1024), 2048)
+        XCTAssertEqual(service.optimalStreamingPoolMB(totalRAMBytes: 24 * 1024 * 1024 * 1024), 4096)
+        XCTAssertEqual(service.optimalStreamingPoolMB(totalRAMBytes: 32 * 1024 * 1024 * 1024), 4096)
+        XCTAssertEqual(service.optimalStreamingPoolMB(totalRAMBytes: 64 * 1024 * 1024 * 1024), 6144)
+    }
+
+    func testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusLaunchGPUPerfTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
+
+        let executableURL = root.appendingPathComponent("game.exe")
+        try "#!/bin/sh\nprintf '%s|%s|%s|%s|%s\\n' \"$MTL_SHADER_VALIDATION\" \"$DX12_MAX_FRAME_LATENCY\" \"$WINE_HIGH_PERFORMANCE\" \"$WINE_D3D_GPU_PRIORITY\" \"$WINEMSYNC\"\n"
+            .write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+
+        let runtimeURL = URL(fileURLWithPath: "/bin/sh")
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "Process harness",
+            executableURL: runtimeURL,
+            winebootURL: nil,
+            version: "harness",
+            architecture: "arm64",
+            status: "test harness"
+        )
+        let prefix = WinePrefix(
+            name: "GPU Harness prefix",
+            url: root,
+            runtimeURL: runtimeURL,
+            architecture: .win64
+        )
+        let game = Game(
+            title: "GPU Harness Game",
+            store: .local,
+            storeApplicationID: "gpu-harness-game",
+            installationURL: root,
+            executableURL: executableURL
+        )
+
+        let outcome = try await GameLaunchService().launchWindows(
+            game: game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        XCTAssertEqual(outcome.standardOutput, "0|2|1|high|1\n")
+        XCTAssertEqual(outcome.exitStatus, 0)
+    }
 }
 

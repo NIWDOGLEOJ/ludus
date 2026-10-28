@@ -362,7 +362,9 @@ struct WineBottleService: Sendable {
                    trimmed.hasPrefix("\"WINED3DMETAL\"") ||
                    trimmed.hasPrefix("\"WINEDXVK\"") ||
                    trimmed.hasPrefix("\"WINEDXMT\"") ||
-                   trimmed.hasPrefix("\"WINEMSYNC\"") {
+                   trimmed.hasPrefix("\"WINEMSYNC\"") ||
+                   trimmed.hasPrefix("\"MTL_SHADER_VALIDATION\"") ||
+                   trimmed.hasPrefix("\"WINE_HIGH_PERFORMANCE\"") {
                     continue
                 }
             }
@@ -374,7 +376,9 @@ struct WineBottleService: Sendable {
             "\"WINED3DMETAL\" = \"\(resolvedBackend == .d3dmetal ? "1" : "0")\"",
             "\"WINEDXVK\" = \"\(resolvedBackend == .dxvk ? "1" : "0")\"",
             "\"WINEDXMT\" = \"\(resolvedBackend == .dxmt ? "1" : "0")\"",
-            "\"WINEMSYNC\" = \"\(msync ? "1" : "0")\""
+            "\"WINEMSYNC\" = \"\(msync ? "1" : "0")\"",
+            "\"MTL_SHADER_VALIDATION\" = \"0\"",
+            "\"WINE_HIGH_PERFORMANCE\" = \"1\""
         ]
 
         if envSectionFound {

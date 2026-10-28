@@ -201,6 +201,15 @@ struct OvercrossTestApp {
         runTest(name: "testDiagnosticsConsentAndSettingsPersistence") { $0.testDiagnosticsConsentAndSettingsPersistence() }
         runTest(name: "testAnonymousDiagnosticsLocalReportStorage") { $0.testAnonymousDiagnosticsLocalReportStorage() }
 
+        // Game Optimization & GPU Utilization Tests
+        runTest(name: "testGameOptimizationNeutralizesProblematicLibraries") { try $0.testGameOptimizationNeutralizesProblematicLibraries() }
+        runTest(name: "testGameOptimizationEngineINISettings16GB") { try $0.testGameOptimizationEngineINISettings16GB() }
+        runTest(name: "testGameOptimizationEngineINIPreservesExistingKeys") { try $0.testGameOptimizationEngineINIPreservesExistingKeys() }
+        runTest(name: "testOptimalStreamingPoolMBForDifferentRAMSizes") { $0.testOptimalStreamingPoolMBForDifferentRAMSizes() }
+        await runAsyncTest(name: "testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment") {
+            try await $0.testWindowsLaunchInjectsGPUPerformanceAndOptimizationEnvironment()
+        }
+
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print(" Results: \(passedCount) passed, \(failedCount) failed (\(String(format: "%.2f", totalElapsed))s total)")

@@ -242,6 +242,20 @@ struct GameDetailDrawer: View {
                         .buttonStyle(.bordered)
                         .disabled(appModel.isRepairingDependencies)
 
+                        // Automated Game Optimization
+                        Button {
+                            appModel.optimizeGameSettings(for: game.id)
+                        } label: {
+                            HStack {
+                                Image(systemName: "wand.and.stars")
+                                Text("Auto-Optimize Memory & DLLs")
+                            }
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.bordered)
+
                         if let repairMsg = appModel.dependencyRepairMessage {
                             Text(repairMsg)
                                 .font(.caption2)

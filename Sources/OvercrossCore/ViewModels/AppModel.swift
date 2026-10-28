@@ -1979,7 +1979,16 @@ final class AppModel: ObservableObject {
 
                 let runtime = self.runtimeReport.runtimes.first(where: { $0.executableURL == prefix.runtimeURL }) ?? self.runtimeReport.runtimes.first
                 let summary = try await bottleService.repairDependencies(in: prefix.url, runtime: runtime)
-                self.dependencyRepairMessage = summary.statusMessage
+                
+                var fullMessage = summary.statusMessage
+                if let gameID, let game = self.games.first(where: { $0.id == gameID }) {
+                    let optReport = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
+                    if let optSummary = optReport.summary {
+                        fullMessage += " \(optSummary)"
+                    }
+                }
+
+                self.dependencyRepairMessage = fullMessage
                 self.notifyOperation(
                     title: "Dependency Repair Complete",
                     body: "DirectX (\(summary.installedDirectXCount)) and Visual C++ (\(summary.installedVCRuntimeCount)) runtimes verified for \(prefix.name)."
@@ -1989,6 +1998,24 @@ final class AppModel: ObservableObject {
             }
             self.isRepairingDependencies = false
         }
+    }
+
+    func optimizeGameSettings(for gameID: UUID) {
+        guard let game = games.first(where: { $0.id == gameID }) else { return }
+        let prefix: WinePrefix
+        if let pid = game.prefixID, let found = prefixes.first(where: { $0.id == pid }) {
+            prefix = found
+        } else if let defaultBottle = prefixes.first(where: { $0.name == "DefaultBottle" }) {
+            prefix = defaultBottle
+        } else if let firstPrefix = prefixes.first {
+            prefix = firstPrefix
+        } else {
+            dependencyRepairMessage = "No compatibility prefix available to optimize."
+            return
+        }
+
+        let report = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
+        dependencyRepairMessage = report.summary ?? "Optimization check complete: Game files and Engine configuration are optimal."
     }
 
     func forceStopAndResetBottle(for gameID: UUID? = nil) {
@@ -2839,12 +2866,14 @@ final class AppModel: ObservableObject {
         }
 
         isDownloadingUpdate = true
+        updateCheckMessage = "Downloading and applying update v\(update.version)..."
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.updateService.downloadAndOpenDMG(from: dmgURL)
+                try await self.updateService.downloadAndApplyUpdate(from: dmgURL)
                 await MainActor.run {
                     self.isDownloadingUpdate = false
+                    self.updateCheckMessage = "Update complete. Relaunching..."
                 }
             } catch {
                 await MainActor.run {

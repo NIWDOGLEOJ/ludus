@@ -280,7 +280,7 @@ struct MainLibraryView: View {
             if appModel.isDownloadingUpdate {
                 ProgressView()
                     .scaleEffect(0.7)
-                Text("Downloading DMG…")
+                Text("Installing update…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {

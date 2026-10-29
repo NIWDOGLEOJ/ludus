@@ -488,14 +488,31 @@ struct GameLaunchService: Sendable {
         let stem = selectedURL.deletingPathExtension().lastPathComponent
         let candidateNames = [
             stem,
-            "\(stem)-Win64-Shipping"
+            "\(stem)-Win64-Shipping",
+            "\(stem)-Shipping"
         ]
-        let candidateDirectories = [
-            installationURL.appendingPathComponent("Phoenix/Binaries/Win64", isDirectory: true),
-            installationURL.appendingPathComponent("Binaries/Win64", isDirectory: true)
+        var candidateDirectories = [
+            installationURL.appendingPathComponent("Binaries/Win64", isDirectory: true),
+            installationURL.appendingPathComponent("Phoenix/Binaries/Win64", isDirectory: true)
         ]
 
+        // Dynamically discover any subdirectories containing Binaries/Win64 (e.g. Unreal Engine project folders)
+        if let subdirs = try? fileManager.contentsOfDirectory(at: installationURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+            for subdir in subdirs {
+                var isDir: ObjCBool = false
+                if fileManager.fileExists(atPath: subdir.path, isDirectory: &isDir), isDir.boolValue {
+                    let win64Dir = subdir.appendingPathComponent("Binaries/Win64", isDirectory: true)
+                    if fileManager.fileExists(atPath: win64Dir.path) && !candidateDirectories.contains(win64Dir) {
+                        candidateDirectories.append(win64Dir)
+                    }
+                }
+            }
+        }
+
         let selectedSize = (try? selectedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        var bestCandidate: URL?
+        var bestSize = selectedSize
+
         for directory in candidateDirectories {
             for name in candidateNames {
                 let candidate = directory.appendingPathComponent(name).appendingPathExtension("exe")
@@ -504,12 +521,28 @@ struct GameLaunchService: Sendable {
                     continue
                 }
                 let candidateSize = (try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                if candidateSize > selectedSize {
-                    return candidate
+                if candidateSize > bestSize {
+                    bestSize = candidateSize
+                    bestCandidate = candidate
+                }
+            }
+
+            // Also search for any shipping executable inside the Win64 directory
+            if let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+                for file in entries where file.pathExtension.lowercased() == "exe" {
+                    let fileName = file.deletingPathExtension().lastPathComponent.lowercased()
+                    if fileName.contains("shipping") || fileName.contains("win64") {
+                        guard file.standardizedFileURL.path.hasPrefix(installationURL.standardizedFileURL.path + "/") else { continue }
+                        let candidateSize = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                        if candidateSize > bestSize {
+                            bestSize = candidateSize
+                            bestCandidate = file
+                        }
+                    }
                 }
             }
         }
-        return selectedURL
+        return bestCandidate ?? selectedURL
     }
 
     static func is32BitWindowsExecutable(at url: URL) -> Bool {

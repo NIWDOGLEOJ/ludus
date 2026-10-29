@@ -104,7 +104,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
     }
 
     public static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.7"
     }
 
     // MARK: - Log Sanitization (PII Scrubbing)
@@ -230,16 +230,13 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
 
     // MARK: - Remote Transmission
 
-    private static let defaultTelegramBotTokenEncoded = "OTIwNzM5OTEzODpBQUZrbXhEY0REblQzNzFHN0NoZ29Hc1k0Q2d5SW9GemlLYw=="
-    private static let defaultTelegramChatIDEncoded = "OTA3MTM3MjcwMw=="
-
     public static func decodeSecret(_ base64: String) -> String {
         guard let data = Data(base64Encoded: base64),
               let str = String(data: data, encoding: .utf8) else { return "" }
         return str
     }
 
-    /// Asynchronously transmits the anonymous diagnostic report to the developer via Telegram and configured endpoints.
+    /// Asynchronously records the anonymous diagnostic report locally and, if configured, transmits to a user-provided endpoint or Telegram bot.
     public func sendReport(
         _ payload: AnonymousDiagnosticPayload,
         endpointURL: URL? = nil
@@ -247,7 +244,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         // Always save locally first so the user can inspect it
         saveReportLocally(payload)
 
-        // 1. Deliver to Telegram Bot
+        // 1. Deliver to Telegram Bot only if custom credentials are provided
         try? await sendToTelegram(payload: payload)
 
         // 2. Deliver to custom telemetry endpoint if configured
@@ -271,9 +268,11 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         customBotToken: String? = nil,
         customChatID: String? = nil
     ) async throws {
-        let token = customBotToken ?? Self.decodeSecret(Self.defaultTelegramBotTokenEncoded)
-        let chatID = customChatID ?? Self.decodeSecret(Self.defaultTelegramChatIDEncoded)
-        guard !token.isEmpty, !chatID.isEmpty else { return }
+        guard let token = customBotToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty,
+              let chatID = customChatID?.trimmingCharacters(in: .whitespacesAndNewlines), !chatID.isEmpty else {
+            // No custom credentials configured; report is saved locally
+            return
+        }
 
         guard let apiURL = URL(string: "https://api.telegram.org/bot\(token)/sendMessage") else { return }
 

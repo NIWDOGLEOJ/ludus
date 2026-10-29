@@ -63,7 +63,7 @@ public final class GitHubUpdateService: @unchecked Sendable {
     }
 
     public var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.7"
     }
 
     public func checkForUpdates() async throws -> AppUpdateInfo? {
@@ -178,6 +178,10 @@ public final class GitHubUpdateService: @unchecked Sendable {
         targetAppURL: URL? = nil,
         terminateCurrentApp: Bool = true
     ) async throws {
+        guard url.scheme == "https", let host = url.host, host.contains("github.com") || host.contains("githubusercontent.com") else {
+            throw UpdateError.downloadFailed("Insecure or unauthorized update download source: \(url.absoluteString)")
+        }
+
         let (tempLocalURL, response) = try await URLSession.shared.download(from: url)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw UpdateError.downloadFailed("Server returned invalid HTTP status")
@@ -228,6 +232,16 @@ public final class GitHubUpdateService: @unchecked Sendable {
         guard let sourceApp = candidateApps.first(where: { $0.lastPathComponent == "Ludus.app" || $0.pathExtension == "app" }) else {
             try? fileManager.removeItem(at: stagingRoot)
             throw UpdateError.downloadFailed("The update disk image does not contain Ludus.app.")
+        }
+
+        // Validate bundle identity before staging
+        let infoPlist = sourceApp.appendingPathComponent("Contents/Info.plist")
+        guard let infoData = try? Data(contentsOf: infoPlist),
+              let plistObj = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
+              let bundleID = plistObj["CFBundleIdentifier"] as? String,
+              bundleID == "com.ludus.app" || bundleID.contains("ludus") || bundleID.contains("overcross") else {
+            try? fileManager.removeItem(at: stagingRoot)
+            throw UpdateError.downloadFailed("The downloaded application bundle failed bundle identity verification.")
         }
 
         // 3. Stage the extracted application

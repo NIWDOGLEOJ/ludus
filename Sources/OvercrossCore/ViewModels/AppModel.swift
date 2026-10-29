@@ -1566,21 +1566,31 @@ final class AppModel: ObservableObject {
         notificationService.post(title: title, body: body)
     }
 
+    private var storageRefreshTask: Task<Void, Never>?
+
     func refreshStorageUsage() {
+        storageRefreshTask?.cancel()
         let games = games
         let service = storageUsageService
-        Task { [weak self] in
+        storageRefreshTask = Task { [weak self] in
+            // Debounce by 150ms to prevent thrashing disk I/O on rapid state transitions
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+
             let usage = await Task.detached(priority: .utility) {
                 var perGame: [UUID: Int64] = [:]
                 for game in games {
+                    guard !Task.isCancelled else { break }
                     if let bytes = service.usage(for: game) {
                         perGame[game.id] = bytes
                     }
                 }
                 return (perGame, service.totalUsage(for: games))
             }.value
-            self?.gameStorageBytes = usage.0
-            self?.installedStorageBytes = usage.1
+
+            guard !Task.isCancelled, let self else { return }
+            self.gameStorageBytes = usage.0
+            self.installedStorageBytes = usage.1
         }
     }
 
@@ -3043,27 +3053,12 @@ final class AppModel: ObservableObject {
                         }
                     }
                     finalEvidence = evidence
-                } else if game.store == .steam, let appIDStr = game.storeApplicationID, let appID = UInt32(appIDStr) {
-                    let gameTargetDir = targetBase.appendingPathComponent(game.title, isDirectory: true)
-                    try FileManager.default.createDirectory(at: gameTargetDir, withIntermediateDirectories: true)
-                    try self.steamService.prepareGameDirectory(at: gameTargetDir, appID: appID)
-                    for step in 1...10 {
-                        try await Task.sleep(nanoseconds: 80_000_000)
-                        await MainActor.run {
-                            let frac = Double(step) / 10.0
-                            let detail = "Downloading depots... \(step * 10)%"
-                            self.autonomousDownloadProgress[gameID] = frac
-                            self.autonomousDownloadDetails[gameID] = detail
-                            self.activeDownloads[gameID]?.fraction = frac
-                            self.activeDownloads[gameID]?.detail = detail
-                            self.updateDownloadOperation(
-                                id: operationID,
-                                state: .running,
-                                fraction: frac,
-                                detail: detail
-                            )
-                        }
-                    }
+                } else if game.store == .steam {
+                    throw NSError(
+                        domain: "SteamDownload",
+                        code: 400,
+                        userInfo: [NSLocalizedDescriptionKey: "Steam Windows titles cannot be downloaded directly via macOS web APIs. Please install the game via Windows Steam inside a bottle or import an existing installation directory."]
+                    )
                 }
 
                 await MainActor.run {
@@ -3085,6 +3080,7 @@ final class AppModel: ObservableObject {
                         if let finalEvidence {
                             self.games[index].installationURL = finalEvidence.installationURL
                             self.games[index].executableURL = finalEvidence.executableURL
+                            self.games[index].compatibilityStatus = .testedWorking
                         } else {
                             let gameTargetDir = targetBase.appendingPathComponent(game.title, isDirectory: true)
                             self.games[index].installationURL = gameTargetDir
@@ -3098,9 +3094,9 @@ final class AppModel: ObservableObject {
                             }
                             if let foundExe {
                                 self.games[index].executableURL = foundExe
+                                self.games[index].compatibilityStatus = .testedWorking
                             }
                         }
-                        self.games[index].compatibilityStatus = .testedWorking
                         self.persistGames()
                     }
                     self.refreshStorageUsage()

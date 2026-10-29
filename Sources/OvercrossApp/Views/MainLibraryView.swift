@@ -20,6 +20,7 @@ struct MainLibraryView: View {
     @State private var showAccountsSheet = false
     @State private var showStorageSheet = false
     @State private var showDownloadsSheet = false
+    @State private var showDiagnosticsSheet = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -92,6 +93,29 @@ struct MainLibraryView: View {
         }
         .sheet(isPresented: $appModel.showDiagnosticsConsentSheet) {
             DiagnosticsConsentSheet()
+        }
+        .sheet(isPresented: $showDiagnosticsSheet) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button {
+                        showDiagnosticsSheet = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                            .padding([.top, .trailing], 16)
+                    }
+                    .buttonStyle(.plain)
+                }
+                DiagnosticsView()
+            }
+            .frame(minWidth: 700, minHeight: 550)
+        }
+        .onChange(of: appModel.selectedSection) { _, newSection in
+            if newSection == .diagnostics {
+                showDiagnosticsSheet = true
+            }
         }
         .onAppear {
             appModel.startAutonomousBootstrap()
@@ -255,6 +279,17 @@ struct MainLibraryView: View {
                 .cornerRadius(8)
             }
             .buttonStyle(.plain)
+
+            // Diagnostics Button
+            Button {
+                showDiagnosticsSheet = true
+            } label: {
+                Image(systemName: "stethoscope")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Diagnostics & Host Checks")
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)

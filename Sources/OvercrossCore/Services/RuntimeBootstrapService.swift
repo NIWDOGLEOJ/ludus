@@ -99,21 +99,14 @@ struct RuntimeBootstrapService: Sendable {
             }
         }
 
-        // 3. Auto-bootstrap pre-built bundle
-        progress?(.downloading(fraction: 0.1, speed: "Starting", detail: "Connecting to runtime mirror..."))
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // 3. Initialize managed runtime directory structure
+        progress?(.extracting(detail: "Initializing managed runtime environment..."))
 
         // Create directory structure
         let binDir = managedRuntimeDirectory.appendingPathComponent("bin", isDirectory: true)
         let libDir = managedRuntimeDirectory.appendingPathComponent("lib", isDirectory: true)
         try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: libDir, withIntermediateDirectories: true)
-
-        progress?(.downloading(fraction: 0.6, speed: "25 MB/s", detail: "Downloading Apple Silicon Wine-CX runtime..."))
-        try await Task.sleep(nanoseconds: 150_000_000)
-
-        progress?(.extracting(detail: "Unpacking translation libraries and D3DMetal..."))
-        try await Task.sleep(nanoseconds: 100_000_000)
 
         // Create script wrapper if no native binary present yet
         let winePath = binDir.appendingPathComponent("wine64")

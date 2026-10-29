@@ -2412,8 +2412,7 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
     func testEpicServiceGetLaunchArguments() async throws {
         let epicService = EpicService()
         let args = await epicService.getLaunchArguments(for: "fa4240e57a3c46b39f169041b7811293")
-        print(">>> TEST EPIC LAUNCH ARGS COUNT: \(args.count)")
-        print(">>> TEST EPIC LAUNCH ARGS: \(args)")
+        XCTAssertTrue(args.isEmpty || args.contains("-EpicPortal") || args.contains(where: { $0.hasPrefix("-UserDir") }))
     }
 
     func testEpicServiceFindApplicationID() throws {

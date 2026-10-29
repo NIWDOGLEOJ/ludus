@@ -11,14 +11,17 @@ public enum LudusStorage {
         let overcrossURL = base.appendingPathComponent(legacyAppName, isDirectory: true)
 
         if !FileManager.default.fileExists(atPath: ludusURL.path) && FileManager.default.fileExists(atPath: overcrossURL.path) {
-            try? FileManager.default.createSymbolicLink(at: ludusURL, withDestinationURL: overcrossURL)
+            if (try? FileManager.default.moveItem(at: overcrossURL, to: ludusURL)) == nil {
+                try? FileManager.default.createSymbolicLink(at: ludusURL, withDestinationURL: overcrossURL)
+            }
         }
 
         if !FileManager.default.fileExists(atPath: ludusURL.path) {
             try? FileManager.default.createDirectory(at: ludusURL, withIntermediateDirectories: true)
         }
 
-        return FileManager.default.fileExists(atPath: ludusURL.path) ? ludusURL : overcrossURL
+        let target = FileManager.default.fileExists(atPath: ludusURL.path) ? ludusURL : overcrossURL
+        return target.resolvingSymlinksInPath()
     }
 
     public static var cachesURL: URL {
@@ -28,14 +31,17 @@ public enum LudusStorage {
         let overcrossURL = base.appendingPathComponent(legacyAppName, isDirectory: true)
 
         if !FileManager.default.fileExists(atPath: ludusURL.path) && FileManager.default.fileExists(atPath: overcrossURL.path) {
-            try? FileManager.default.createSymbolicLink(at: ludusURL, withDestinationURL: overcrossURL)
+            if (try? FileManager.default.moveItem(at: overcrossURL, to: ludusURL)) == nil {
+                try? FileManager.default.createSymbolicLink(at: ludusURL, withDestinationURL: overcrossURL)
+            }
         }
 
         if !FileManager.default.fileExists(atPath: ludusURL.path) {
             try? FileManager.default.createDirectory(at: ludusURL, withIntermediateDirectories: true)
         }
 
-        return FileManager.default.fileExists(atPath: ludusURL.path) ? ludusURL : overcrossURL
+        let target = FileManager.default.fileExists(atPath: ludusURL.path) ? ludusURL : overcrossURL
+        return target.resolvingSymlinksInPath()
     }
 
     public static func defaultGamesURL() -> URL {

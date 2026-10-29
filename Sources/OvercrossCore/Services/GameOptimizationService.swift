@@ -133,7 +133,7 @@ struct GameOptimizationService: Sendable {
     /// Checks if a game appears to be an Unreal Engine title (or specifically known to need Engine.ini tuning).
     func isUnrealEngineTitle(installationURL: URL?, executableURL: URL?, gameTitle: String) -> Bool {
         let titleLower = gameTitle.lowercased()
-        if titleLower.contains("hogwarts") || titleLower.contains("phoenix") {
+        if titleLower.contains("hogwarts") || titleLower.contains("phoenix") || titleLower.contains("unreal") {
             return true
         }
 
@@ -155,6 +155,20 @@ struct GameOptimizationService: Sendable {
                     return true
                 }
             }
+
+            // Dynamically check subdirectories for Unreal signatures (e.g. Binaries/Win64 or Content/Paks)
+            if let subdirs = try? FileManager.default.contentsOfDirectory(at: install, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+                for subdir in subdirs {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: subdir.path, isDirectory: &isDir), isDir.boolValue {
+                        let win64 = subdir.appendingPathComponent("Binaries/Win64", isDirectory: true)
+                        let paks = subdir.appendingPathComponent("Content/Paks", isDirectory: true)
+                        if FileManager.default.fileExists(atPath: win64.path) || FileManager.default.fileExists(atPath: paks.path) {
+                            return true
+                        }
+                    }
+                }
+            }
         }
 
         return false
@@ -173,25 +187,37 @@ struct GameOptimizationService: Sendable {
 
         let cleanTitle = gameTitle.components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
         let exeStem = executableURL?.deletingPathExtension().lastPathComponent ?? cleanTitle
+        let strippedStem = exeStem
+            .replacingOccurrences(of: "-Win64-Shipping", with: "")
+            .replacingOccurrences(of: "Shipping", with: "")
 
-        let candidateFolderNames = [
+        var candidateFolderNames = [
             gameTitle,
             cleanTitle,
             exeStem,
+            strippedStem,
             "Hogwarts Legacy",
             "HogwartsLegacy",
             "Phoenix"
         ]
+        if !strippedStem.isEmpty {
+            candidateFolderNames.append(strippedStem.components(separatedBy: CharacterSet.alphanumerics.inverted).joined())
+        }
 
         var existingCandidateURLs: [URL] = []
         if FileManager.default.fileExists(atPath: appDataLocal.path) {
             if let entries = try? FileManager.default.contentsOfDirectory(atPath: appDataLocal.path) {
                 for entry in entries {
-                    for candidate in candidateFolderNames {
+                    for candidate in candidateFolderNames where !candidate.isEmpty {
                         if entry.lowercased() == candidate.lowercased() {
-                            let ini = appDataLocal.appendingPathComponent("\(entry)/Saved/Config/WindowsNoEditor/Engine.ini")
-                            if FileManager.default.fileExists(atPath: ini.path) && !existingCandidateURLs.contains(ini) {
-                                existingCandidateURLs.append(ini)
+                            let possibleInis = [
+                                appDataLocal.appendingPathComponent("\(entry)/Saved/Config/WindowsNoEditor/Engine.ini"),
+                                appDataLocal.appendingPathComponent("\(entry)/Saved/Config/Windows/Engine.ini")
+                            ]
+                            for ini in possibleInis {
+                                if FileManager.default.fileExists(atPath: ini.path) && !existingCandidateURLs.contains(ini) {
+                                    existingCandidateURLs.append(ini)
+                                }
                             }
                         }
                     }

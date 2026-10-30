@@ -220,6 +220,11 @@ struct OvercrossTestApp {
         await runAsyncTest(name: "testWindowsLaunchNixxesInjectsNoLauncherAndCrossOverArguments") {
             try await $0.testWindowsLaunchNixxesInjectsNoLauncherAndCrossOverArguments()
         }
+        runTest(name: "testWineBottleRegistryMergeSectionRobustness") { try $0.testWineBottleRegistryMergeSectionRobustness() }
+        await runAsyncTest(name: "testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy") {
+            try await $0.testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy()
+        }
+        runTest(name: "testSyncDefaultBottleRegistry") { try $0.testSyncDefaultBottleRegistry() }
 
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

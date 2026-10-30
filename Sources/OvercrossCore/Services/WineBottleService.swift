@@ -654,7 +654,8 @@ struct WineBottleService: Sendable {
                 "\"ExclusiveFullscreen\"": "dword:00000000",
                 "\"UpscaleMethod\"": "dword:00000003",
                 "\"UpscaleQuality\"": "dword:00000003",
-                "\"DynamicResolutionTargetFPS\"": "dword:0000001e",
+                "\"DynamicResolutionTargetFPS\"": "dword:00000000",
+                "\"AsyncCompute\"": "dword:00000000",
                 "\"FrameGen\"": "dword:00000000",
                 "\"ReflexMode\"": "dword:00000000",
                 "\"AntilagMode\"": "dword:00000000",
@@ -663,6 +664,15 @@ struct WineBottleService: Sendable {
                 "\"RTShadows\"": "dword:00000000",
                 "\"RTAmbientOcclusion\"": "dword:00000000",
                 "\"RTInteriors\"": "dword:00000000"
+            ],
+            into: lines
+        )
+
+        // 6. [Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides] - Local D3D12 shim for T-pose and symbiote fix
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides",
+            settings: [
+                "\"d3d12\"": "\"native,builtin\""
             ],
             into: lines
         )
@@ -708,7 +718,7 @@ struct WineBottleService: Sendable {
         return content.contains("\"MouseWarpOverride\"=\"force\"")
     }
 
-    private static func mergeRegistrySection(
+    static func mergeRegistrySection(
         named sectionName: String,
         settings: [String: String],
         into existingLines: [String]
@@ -735,45 +745,63 @@ struct WineBottleService: Sendable {
 
         if let headerIdx = sectionHeaderIndex {
             let endIdx = sectionEndIndex ?? lines.count
-            var existingKeyIndices: [String: Int] = [:]
+            var sectionLines: [String] = []
+            var remainingSettings = settings
 
+            var lookup: [String: (String, String)] = [:]
+            for (k, v) in settings {
+                lookup[k.trimmingCharacters(in: .whitespaces).lowercased()] = (k, v)
+            }
+
+            sectionLines.append(lines[headerIdx])
+
+            var lastCommentOrHeaderIndex = 0
             for i in (headerIdx + 1)..<endIdx {
-                let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") {
+                let line = lines[i]
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+                if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") || trimmed.isEmpty {
+                    sectionLines.append(line)
+                    if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") {
+                        lastCommentOrHeaderIndex = sectionLines.count - 1
+                    }
                     continue
                 }
+
                 if let eqIndex = trimmed.firstIndex(of: "=") {
                     let key = String(trimmed[..<eqIndex]).trimmingCharacters(in: .whitespaces)
-                    existingKeyIndices[key.lowercased()] = i
+                    let lowerKey = key.lowercased()
+                    if let (origKey, val) = lookup[lowerKey] {
+                        sectionLines.append("\(origKey)=\(val)")
+                        remainingSettings.removeValue(forKey: origKey)
+                        lookup.removeValue(forKey: lowerKey)
+                    } else {
+                        sectionLines.append(line)
+                    }
+                } else {
+                    sectionLines.append(line)
                 }
             }
 
-            var insertPos = headerIdx + 1
-            while insertPos < endIdx {
-                let t = lines[insertPos].trimmingCharacters(in: .whitespaces)
-                if t.hasPrefix("#") || t.hasPrefix(";") {
-                    insertPos += 1
-                } else {
-                    break
+            let sortedNewKeys = remainingSettings.keys.sorted()
+            var insertIdx = lastCommentOrHeaderIndex + 1
+            for k in sortedNewKeys {
+                if let val = remainingSettings[k] {
+                    sectionLines.insert("\(k)=\(val)", at: insertIdx)
+                    insertIdx += 1
                 }
             }
 
-            var offset = 0
-            for (key, val) in settings {
-                if let lineIdx = existingKeyIndices[key.lowercased()] {
-                    lines[lineIdx + offset] = "\(key)=\(val)"
-                } else {
-                    lines.insert("\(key)=\(val)", at: insertPos + offset)
-                    offset += 1
-                }
-            }
+            lines.replaceSubrange(headerIdx..<endIdx, with: sectionLines)
         } else {
             if !lines.isEmpty && !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
                 lines.append("")
             }
             lines.append("[\(sectionName)]")
-            for (key, val) in settings {
-                lines.append("\(key)=\(val)")
+            for k in settings.keys.sorted() {
+                if let val = settings[k] {
+                    lines.append("\(k)=\(val)")
+                }
             }
         }
 

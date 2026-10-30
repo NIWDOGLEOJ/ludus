@@ -2997,5 +2997,140 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(partsStandard[1].contains("-nolauncher"))
         XCTAssertFalse(partsStandard[1].contains("nvngx=d"))
     }
+
+    func testWineBottleRegistryMergeSectionRobustness() throws {
+        let originalLines = [
+            "WINE REGISTRY Version 2",
+            "[Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2\\\\Graphics] 1793357060",
+            "#time=1dd685b9ed8695e",
+            "\"AA\"=dword:00000002",
+            "\"DynamicResolutionTargetFPS\"=dword:0000001e",
+            "\"Fullscreen\"=dword:00000001",
+            "\"WindowWidth\"=dword:000005a0",
+            "",
+            "[Software\\\\Wine\\\\DirectSound] 1793052511",
+            "#time=1dd6596895b3e02",
+            "\"MaxBuffers\"=dword:00000040"
+        ]
+
+        let settings = [
+            "\"DynamicResolutionTargetFPS\"": "dword:00000000",
+            "\"Fullscreen\"": "dword:00000000",
+            "\"AsyncCompute\"": "dword:00000000",
+            "\"UpscaleMethod\"": "dword:00000003"
+        ]
+
+        let merged = WineBottleService.mergeRegistrySection(
+            named: "Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2\\\\Graphics",
+            settings: settings,
+            into: originalLines
+        )
+
+        let mergedText = merged.joined(separator: "\n")
+        XCTAssertTrue(mergedText.contains("\"DynamicResolutionTargetFPS\"=dword:00000000"))
+        XCTAssertFalse(mergedText.contains("\"DynamicResolutionTargetFPS\"=dword:0000001e"))
+        XCTAssertTrue(mergedText.contains("\"Fullscreen\"=dword:00000000"))
+        XCTAssertFalse(mergedText.contains("\"Fullscreen\"=dword:00000001"))
+        XCTAssertTrue(mergedText.contains("\"AsyncCompute\"=dword:00000000"))
+        XCTAssertTrue(mergedText.contains("\"UpscaleMethod\"=dword:00000003"))
+        XCTAssertTrue(mergedText.contains("\"AA\"=dword:00000002"))
+        XCTAssertTrue(mergedText.contains("\"WindowWidth\"=dword:000005a0"))
+        XCTAssertTrue(mergedText.contains("[Software\\\\Wine\\\\DirectSound] 1793052511"))
+        XCTAssertTrue(mergedText.contains("\"MaxBuffers\"=dword:00000040"))
+
+        let newSectionMerged = WineBottleService.mergeRegistrySection(
+            named: "Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides",
+            settings: ["\"d3d12\"": "\"native,builtin\""],
+            into: merged
+        )
+        let newSectionText = newSectionMerged.joined(separator: "\n")
+        XCTAssertTrue(newSectionText.contains("[Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides]"))
+        XCTAssertTrue(newSectionText.contains("\"d3d12\"=\"native,builtin\""))
+    }
+
+    func testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusNixxesD3DHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
+
+        // Mock runtime dumping WINEDLLOVERRIDES, arguments, and PWD
+        let runtimeURL = root.appendingPathComponent("SharedSupport/CrossOver/bin/wine")
+        try FileManager.default.createDirectory(at: runtimeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$WINEDLLOVERRIDES\" \"$*\" \"$PWD\"\n"
+            .write(to: runtimeURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeURL.path)
+
+        let executableURL = root.appendingPathComponent("Spider-Man2.exe")
+        try Data("fake exe".utf8).write(to: executableURL)
+
+        // Also place a mock local d3d12.dll
+        try Data("fake d3d12".utf8).write(to: root.appendingPathComponent("d3d12.dll"))
+
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "CrossOver Wine",
+            executableURL: runtimeURL,
+            winebootURL: nil,
+            version: "26.3",
+            architecture: "arm64",
+            status: "ready"
+        )
+        let prefix = WinePrefix(
+            name: "Harness prefix",
+            url: root,
+            runtimeURL: runtimeURL,
+            architecture: .win64
+        )
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "spiderman-2",
+            installationURL: root,
+            executableURL: executableURL,
+            graphicsBackend: "d3dmetal"
+        )
+
+        let outcome = try await GameLaunchService().launchWindows(
+            game: game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        let output = outcome.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = output.components(separatedBy: "|")
+        XCTAssertEqual(parts.count, 3)
+
+        let envOverrides = parts[0]
+        let rawArgs = parts[1]
+
+        // 1. WINEDLLOVERRIDES contains all critical components:
+        // - nvngx=d (disables DLSS crashes)
+        // - dxgi=native (connects swapchain to D3DMetal)
+        // - d3d11=native
+        // - d3d12=native,builtin (loads local proxy shim)
+        XCTAssertTrue(envOverrides.contains("nvngx=d"))
+        XCTAssertTrue(envOverrides.contains("dxgi=native"))
+        XCTAssertTrue(envOverrides.contains("d3d12=native,builtin"))
+
+        // 2. CrossOver arguments contain consolidated --dll option matching overrides
+        XCTAssertTrue(rawArgs.contains("--dll nvngx=d"))
+        XCTAssertTrue(rawArgs.contains("dxgi=native"))
+        XCTAssertTrue(rawArgs.contains("d3d12=native,builtin"))
+        XCTAssertTrue(rawArgs.contains("-nolauncher"))
+        XCTAssertEqual(outcome.exitStatus, 0)
+    }
+
+    func testSyncDefaultBottleRegistry() throws {
+        let bottleURL = URL(fileURLWithPath: "/Users/godjoel/Library/Application Support/Overcross/Prefixes/DefaultBottle")
+        if FileManager.default.fileExists(atPath: bottleURL.appendingPathComponent("user.reg").path) {
+            _ = try WineBottleService.syncBottleRegistry(prefixURL: bottleURL, retina: false)
+            let content = try String(contentsOf: bottleURL.appendingPathComponent("user.reg"), encoding: .utf8)
+            XCTAssertTrue(content.contains("\"DynamicResolutionTargetFPS\"=dword:00000000"))
+            XCTAssertFalse(content.contains("\"DynamicResolutionTargetFPS\"=dword:0000001e"))
+        }
+    }
 }
 

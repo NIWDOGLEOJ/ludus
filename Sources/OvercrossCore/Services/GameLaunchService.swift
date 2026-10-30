@@ -419,10 +419,23 @@ struct GameLaunchService: Sendable {
         var winePreArguments: [String] = []
         let isNixxes = Self.isNixxesOrSonyTitle(title: game.title, executableURL: launchExecutableURL)
 
-        var dllOverrides = game.customEnvironment["WINEDLLOVERRIDES"] ?? ""
+        var dllOverrides = environment["WINEDLLOVERRIDES"] ?? ""
+        let localD3D12 = workingDir.appendingPathComponent("d3d12.dll")
+        if FileManager.default.fileExists(atPath: localD3D12.path) || isNixxes {
+            if dllOverrides.contains("d3d12,d3d11,dxgi=native") {
+                dllOverrides = dllOverrides.replacingOccurrences(of: "d3d12,d3d11,dxgi=native", with: "d3d11,dxgi=native")
+            }
+            if !dllOverrides.contains("d3d12") {
+                let d3d12Override = "d3d12=native,builtin"
+                dllOverrides = dllOverrides.isEmpty ? d3d12Override : "\(dllOverrides);\(d3d12Override)"
+            } else if !dllOverrides.contains("d3d12=native,builtin") {
+                dllOverrides = dllOverrides.replacingOccurrences(of: "d3d12=native", with: "d3d12=native,builtin")
+            }
+        }
+
         if isNixxes && !dllOverrides.contains("nvngx") {
             let nixxesDllOverrides = "nvngx=d;nvngx_dlss=d;nvngx_dlssd=d;nvngx_dlssg=d;sl.dlss=d;sl.dlss_d=d;sl.dlss_g=d;sl.interposer=d"
-            dllOverrides = dllOverrides.isEmpty ? nixxesDllOverrides : "\(dllOverrides);\(nixxesDllOverrides)"
+            dllOverrides = dllOverrides.isEmpty ? nixxesDllOverrides : "\(nixxesDllOverrides);\(dllOverrides)"
         }
 
         if runtime.executableURL.path.contains("SharedSupport/CrossOver") {
@@ -457,7 +470,8 @@ struct GameLaunchService: Sendable {
 
         let modalWatcher = startPreflightModalWatcher(
             processName: launchExecutableURL.deletingPathExtension().lastPathComponent,
-            enabled: isNixxes
+            enabled: isNixxes,
+            timeoutSeconds: isNixxes ? 60.0 : 30.0
         )
         defer { modalWatcher.cancel() }
         #endif
@@ -510,7 +524,7 @@ struct GameLaunchService: Sendable {
     private func startPreflightModalWatcher(
         processName: String,
         enabled: Bool = true,
-        timeoutSeconds: Double = 30.0
+        timeoutSeconds: Double = 60.0
     ) -> PreflightModalWatcher {
         guard enabled else {
             return PreflightModalWatcher(task: nil)
@@ -562,29 +576,44 @@ struct GameLaunchService: Sendable {
 
                 if hasDialog {
                     consecutiveCleanChecks = 0
-                    // 1. Synthesize direct Quartz mouse click on dialog's OK button
+                    // 1. Synthesize direct Quartz mouse clicks on dialog's button area
                     if let db = dialogBounds {
-                        let clickPt1 = CGPoint(x: db.x + (db.w / 2.0) - 50.0, y: db.y + db.h - 35.0)
-                        let clickPt2 = CGPoint(x: db.x + (db.w / 2.0), y: db.y + db.h - 35.0)
-                        for pt in [clickPt1, clickPt2] {
+                        let clickPoints = [
+                            CGPoint(x: db.x + (db.w / 2.0), y: db.y + db.h - 35.0),
+                            CGPoint(x: db.x + (db.w / 2.0) - 50.0, y: db.y + db.h - 35.0),
+                            CGPoint(x: db.x + db.w - 80.0, y: db.y + db.h - 35.0)
+                        ]
+                        for pt in clickPoints {
                             if let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
                                let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) {
                                 down.post(tap: .cghidEventTap)
-                                usleep(30_000)
+                                usleep(25_000)
                                 up.post(tap: .cghidEventTap)
                             }
                         }
                     }
 
-                    // 2. Auxiliary AppleScript key dispatch
+                    // 2. Synthesize direct Quartz Return and Space keystrokes
+                    for keyCode: CGKeyCode in [36, 49] {
+                        if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+                           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                            down.post(tap: .cghidEventTap)
+                            usleep(25_000)
+                            up.post(tap: .cghidEventTap)
+                        }
+                    }
+
+                    // 3. Auxiliary AppleScript key dispatch
                     let appleScript = """
                     tell application "System Events"
                         set procs to (every process whose name contains "\(processName)" or name contains "wine" or name contains "Spider")
                         repeat with p in procs
                             try
-                                set frontmost of p to true
-                                delay 0.05
-                                key code 36
+                                tell p
+                                    set frontmost to true
+                                    delay 0.05
+                                    key code 36
+                                end tell
                             end try
                         end repeat
                     end tell
@@ -598,7 +627,8 @@ struct GameLaunchService: Sendable {
                     try? await Task.sleep(nanoseconds: 800_000_000)
                 } else if foundGameWindow {
                     consecutiveCleanChecks += 1
-                    if consecutiveCleanChecks >= 6 {
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    if consecutiveCleanChecks >= 15 && elapsed >= 20.0 {
                         break
                     }
                 }
@@ -611,7 +641,7 @@ struct GameLaunchService: Sendable {
     private func startPreflightModalWatcher(
         processName: String,
         enabled: Bool = true,
-        timeoutSeconds: Double = 30.0
+        timeoutSeconds: Double = 60.0
     ) -> PreflightModalWatcher {
         return PreflightModalWatcher(task: nil)
     }

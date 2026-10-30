@@ -409,19 +409,57 @@ struct GameLaunchService: Sendable {
         }
         environment["OVERCROSS_RUNTIME_SELECTED"] = runtimeExecutableURL.path
 
-        let arguments = [launchExecutableURL.path] + (profile?.launchArguments ?? []) + game.customLaunchArguments + additionalArguments
         let workingDir: URL
         if launchExecutableURL != executableURL {
             workingDir = launchExecutableURL.deletingLastPathComponent()
         } else {
             workingDir = game.installationURL ?? launchExecutableURL.deletingLastPathComponent()
         }
+
+        var winePreArguments: [String] = []
+        let isNixxes = Self.isNixxesOrSonyTitle(title: game.title, executableURL: launchExecutableURL)
+
+        var dllOverrides = game.customEnvironment["WINEDLLOVERRIDES"] ?? ""
+        if isNixxes && !dllOverrides.contains("nvngx") {
+            let nixxesDllOverrides = "nvngx=d;nvngx_dlss=d;nvngx_dlssd=d;nvngx_dlssg=d;sl.dlss=d;sl.dlss_d=d;sl.dlss_g=d;sl.interposer=d"
+            dllOverrides = dllOverrides.isEmpty ? nixxesDllOverrides : "\(dllOverrides);\(nixxesDllOverrides)"
+        }
+
+        if runtime.executableURL.path.contains("SharedSupport/CrossOver") {
+            winePreArguments.append(contentsOf: ["--bottle", prefix.name])
+            winePreArguments.append(contentsOf: ["--workdir", workingDir.path])
+            if !dllOverrides.isEmpty {
+                winePreArguments.append(contentsOf: ["--dll", dllOverrides])
+            }
+        }
+        if !dllOverrides.isEmpty {
+            environment["WINEDLLOVERRIDES"] = dllOverrides
+        }
+
+        var gameLaunchArgs = (profile?.launchArguments ?? []) + game.customLaunchArguments + additionalArguments
+        if isNixxes {
+            if !gameLaunchArgs.contains("-nolauncher") {
+                gameLaunchArgs.append("-nolauncher")
+            }
+        }
+
+        if environment["ROSETTA_ADVERTISE_AVX"] == nil {
+            environment["ROSETTA_ADVERTISE_AVX"] = "1"
+        }
+
+        let arguments = winePreArguments + [launchExecutableURL.path] + gameLaunchArgs
         // Lock/snap hardware cursor to screen center to avoid triggering macOS Hot Corners on startup
         #if canImport(CoreGraphics)
         let mainDisplay = CGMainDisplayID()
         let displayBounds = CGDisplayBounds(mainDisplay)
         let centerPoint = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
         CGWarpMouseCursorPosition(centerPoint)
+
+        let modalWatcher = startPreflightModalWatcher(
+            processName: launchExecutableURL.deletingPathExtension().lastPathComponent,
+            enabled: isNixxes
+        )
+        defer { modalWatcher.cancel() }
         #endif
 
         defer {
@@ -444,6 +482,140 @@ struct GameLaunchService: Sendable {
         outcome.diagnosticNote = diagnosticNotes.isEmpty ? nil : diagnosticNotes.joined(separator: " ")
         return outcome
     }
+
+    static func isNixxesOrSonyTitle(title: String, executableURL: URL) -> Bool {
+        let t = title.lowercased()
+        let exe = executableURL.deletingPathExtension().lastPathComponent.lowercased()
+        let keywords = [
+            "spider-man",
+            "spiderman",
+            "milesmorales",
+            "ratchet",
+            "riftapart",
+            "horizon",
+            "forbiddenwest",
+            "zerodawn",
+            "tsushima",
+            "ghost of tsushima",
+            "nixxes",
+            "returnal",
+            "the last of us",
+            "god of war",
+            "uncharted"
+        ]
+        return keywords.contains { t.contains($0) || exe.contains($0) }
+    }
+
+    #if canImport(CoreGraphics)
+    private func startPreflightModalWatcher(
+        processName: String,
+        enabled: Bool = true,
+        timeoutSeconds: Double = 30.0
+    ) -> PreflightModalWatcher {
+        guard enabled else {
+            return PreflightModalWatcher(task: nil)
+        }
+
+        let task = Task.detached { [processName] in
+            let startTime = Date()
+            let lowerTarget = processName.lowercased()
+            var consecutiveCleanChecks = 0
+
+            while !Task.isCancelled {
+                if Date().timeIntervalSince(startTime) > timeoutSeconds {
+                    break
+                }
+
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if Task.isCancelled { break }
+
+                guard let windowInfoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+                    continue
+                }
+
+                var hasDialog = false
+                var foundGameWindow = false
+                var dialogBounds: (x: Double, y: Double, w: Double, h: Double)?
+
+                for window in windowInfoList {
+                    let ownerName = (window[kCGWindowOwnerName as String] as? String ?? "").lowercased()
+                    let windowName = (window[kCGWindowName as String] as? String ?? "").lowercased()
+
+                    let matchesOwner = ownerName.contains(lowerTarget) || ownerName.contains("wine") || ownerName.contains("crossover") || ownerName.contains("spider")
+                    let matchesTitle = windowName.contains(lowerTarget) || windowName.contains("spider") || windowName.contains("marvel") || windowName.contains("wine")
+
+                    guard matchesOwner || matchesTitle else { continue }
+
+                    if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                       let height = boundsDict["Height"] as? Double,
+                       let width = boundsDict["Width"] as? Double,
+                       let x = boundsDict["X"] as? Double,
+                       let y = boundsDict["Y"] as? Double {
+                        if height >= 80 && height <= 450 && width >= 150 && width <= 800 {
+                            hasDialog = true
+                            dialogBounds = (x, y, width, height)
+                        } else if height >= 450 && width >= 600 {
+                            foundGameWindow = true
+                        }
+                    }
+                }
+
+                if hasDialog {
+                    consecutiveCleanChecks = 0
+                    // 1. Synthesize direct Quartz mouse click on dialog's OK button
+                    if let db = dialogBounds {
+                        let clickPt1 = CGPoint(x: db.x + (db.w / 2.0) - 50.0, y: db.y + db.h - 35.0)
+                        let clickPt2 = CGPoint(x: db.x + (db.w / 2.0), y: db.y + db.h - 35.0)
+                        for pt in [clickPt1, clickPt2] {
+                            if let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
+                               let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) {
+                                down.post(tap: .cghidEventTap)
+                                usleep(30_000)
+                                up.post(tap: .cghidEventTap)
+                            }
+                        }
+                    }
+
+                    // 2. Auxiliary AppleScript key dispatch
+                    let appleScript = """
+                    tell application "System Events"
+                        set procs to (every process whose name contains "\(processName)" or name contains "wine" or name contains "Spider")
+                        repeat with p in procs
+                            try
+                                set frontmost of p to true
+                                delay 0.05
+                                key code 36
+                            end try
+                        end repeat
+                    end tell
+                    """
+                    let scriptProcess = Process()
+                    scriptProcess.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                    scriptProcess.arguments = ["-e", appleScript]
+                    try? scriptProcess.run()
+                    scriptProcess.waitUntilExit()
+
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                } else if foundGameWindow {
+                    consecutiveCleanChecks += 1
+                    if consecutiveCleanChecks >= 6 {
+                        break
+                    }
+                }
+            }
+        }
+
+        return PreflightModalWatcher(task: task)
+    }
+    #else
+    private func startPreflightModalWatcher(
+        processName: String,
+        enabled: Bool = true,
+        timeoutSeconds: Double = 30.0
+    ) -> PreflightModalWatcher {
+        return PreflightModalWatcher(task: nil)
+    }
+    #endif
 
     static func analyzeAudioDiagnostics(
         standardOutput: String,
@@ -673,6 +845,18 @@ private final class LaunchProcessControl: @unchecked Sendable {
         if let process, process.isRunning {
             process.terminate()
         }
+    }
+}
+
+final class PreflightModalWatcher: @unchecked Sendable {
+    private let task: Task<Void, Never>?
+
+    init(task: Task<Void, Never>? = nil) {
+        self.task = task
+    }
+
+    func cancel() {
+        task?.cancel()
     }
 }
 

@@ -215,6 +215,11 @@ struct OvercrossTestApp {
         await runAsyncTest(name: "testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment") {
             try await $0.testWindowsLaunchInjectsNvidiaOverridesAndAudioProtectionEnvironment()
         }
+        runTest(name: "testGameOptimizationNeutralizesDirectStorageLibraries") { try $0.testGameOptimizationNeutralizesDirectStorageLibraries() }
+        runTest(name: "testNixxesOrSonyTitleDetection") { $0.testNixxesOrSonyTitleDetection() }
+        await runAsyncTest(name: "testWindowsLaunchNixxesInjectsNoLauncherAndCrossOverArguments") {
+            try await $0.testWindowsLaunchNixxesInjectsNoLauncherAndCrossOverArguments()
+        }
 
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

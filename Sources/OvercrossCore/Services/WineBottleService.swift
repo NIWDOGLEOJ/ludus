@@ -637,6 +637,36 @@ struct WineBottleService: Sendable {
             into: lines
         )
 
+        // 5. [Software\Insomniac Games\Marvel's Spider-Man 2] - Skip pre-game launcher popup and tune graphics
+        lines = mergeRegistrySection(
+            named: "Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2",
+            settings: [
+                "\"ShowLauncher\"": "dword:00000000",
+                "\"FirstRun\"": "dword:00000000"
+            ],
+            into: lines
+        )
+
+        lines = mergeRegistrySection(
+            named: "Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2\\\\Graphics",
+            settings: [
+                "\"Fullscreen\"": "dword:00000000",
+                "\"ExclusiveFullscreen\"": "dword:00000000",
+                "\"UpscaleMethod\"": "dword:00000003",
+                "\"UpscaleQuality\"": "dword:00000003",
+                "\"DynamicResolutionTargetFPS\"": "dword:0000001e",
+                "\"FrameGen\"": "dword:00000000",
+                "\"ReflexMode\"": "dword:00000000",
+                "\"AntilagMode\"": "dword:00000000",
+                "\"RayReconstruction\"": "dword:00000000",
+                "\"RTReflections\"": "dword:00000000",
+                "\"RTShadows\"": "dword:00000000",
+                "\"RTAmbientOcclusion\"": "dword:00000000",
+                "\"RTInteriors\"": "dword:00000000"
+            ],
+            into: lines
+        )
+
         let updatedContent = lines.joined(separator: "\n")
         try updatedContent.write(to: userRegURL, atomically: true, encoding: .utf8)
         return updatedContent

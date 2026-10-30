@@ -30,7 +30,9 @@ struct GameOptimizationService: Sendable {
     /// Known problematic libraries bundled in Windows games that cause thread spin-locks, CPU starvation, or crashes on Apple Silicon Wine.
     static let problematicLibraries: Set<String> = [
         "cchromaeditorlibrary64.dll",
-        "cchromaeditorlibrary.dll"
+        "cchromaeditorlibrary.dll",
+        "dstorage.dll",
+        "dstoragecore.dll"
     ]
 
     /// Essential game libraries that must never remain renamed to `.bak` as games require them to bootstrap.
@@ -44,9 +46,14 @@ struct GameOptimizationService: Sendable {
         "gfesdk.dll"
     ]
 
+    /// Libraries in Nixxes / Sony PC ports that trigger CrossOver nvngx/Streamline translation deadlocks
+    static let problematicSonyLibraries: Set<String> = [
+        "sl.interposer.dll"
+    ]
+
     /// Scans the game installation directory and automatically restores any essential libraries previously renamed to `.dll.bak`.
     @discardableResult
-    func restoreEssentialLibraries(at installationURL: URL) -> [String] {
+    func restoreEssentialLibraries(at installationURL: URL, isSony: Bool = false) -> [String] {
         guard FileManager.default.fileExists(atPath: installationURL.path) else { return [] }
 
         var restored: [String] = []
@@ -60,6 +67,9 @@ struct GameOptimizationService: Sendable {
             let filename = fileURL.lastPathComponent.lowercased()
             if filename.hasSuffix(".bak") {
                 let originalStem = fileURL.deletingPathExtension().lastPathComponent.lowercased()
+                if isSony && Self.problematicSonyLibraries.contains(originalStem) {
+                    continue
+                }
                 if Self.essentialLibrariesToRestore.contains(originalStem) {
                     let targetURL = fileURL.deletingPathExtension()
                     do {
@@ -81,9 +91,10 @@ struct GameOptimizationService: Sendable {
 
     /// Recursively scans the game installation directory and neutralizes known problematic DLLs by safely renaming them to `.dll.bak`.
     @discardableResult
-    func neutralizeProblematicLibraries(at installationURL: URL) -> [String] {
+    func neutralizeProblematicLibraries(at installationURL: URL, isSony: Bool = false) -> [String] {
         guard FileManager.default.fileExists(atPath: installationURL.path) else { return [] }
 
+        let targets = isSony ? Self.problematicLibraries.union(Self.problematicSonyLibraries) : Self.problematicLibraries
         var neutralized: [String] = []
         let enumerator = FileManager.default.enumerator(
             at: installationURL,
@@ -93,7 +104,7 @@ struct GameOptimizationService: Sendable {
 
         while let fileURL = enumerator?.nextObject() as? URL {
             let filename = fileURL.lastPathComponent.lowercased()
-            if Self.problematicLibraries.contains(filename) {
+            if targets.contains(filename) {
                 let backupURL = fileURL.deletingPathExtension().appendingPathExtension("dll.bak")
                 if !FileManager.default.fileExists(atPath: backupURL.path) {
                     do {
@@ -309,14 +320,21 @@ struct GameOptimizationService: Sendable {
 
         // 1. Problematic DLL neutralization & essential library restoration
         var neutralized: [String] = []
+        let isSony = GameLaunchService.isNixxesOrSonyTitle(
+            title: game.title,
+            executableURL: game.executableURL ?? (game.installationURL ?? URL(fileURLWithPath: "/"))
+        )
         if let installURL = game.installationURL {
-            let restored = restoreEssentialLibraries(at: installURL)
+            let restored = restoreEssentialLibraries(at: installURL, isSony: isSony)
             if !restored.isEmpty {
                 details.append("Restored \(restored.joined(separator: ", "))")
             }
-            neutralized = neutralizeProblematicLibraries(at: installURL)
+            neutralized = neutralizeProblematicLibraries(at: installURL, isSony: isSony)
             if !neutralized.isEmpty {
-                details.append("Neutralized \(neutralized.joined(separator: ", ")) (prevented CPU spinlock)")
+                let hasDStorage = neutralized.contains(where: { $0.lowercased().contains("dstorage") })
+                let hasInterposer = neutralized.contains(where: { $0.lowercased().contains("sl.interposer") })
+                let reason = hasDStorage ? "bypassed DirectStorage I/O spinlock" : (hasInterposer ? "bypassed Streamline DLSS deadlock" : "prevented CPU spinlock")
+                details.append("Neutralized \(neutralized.joined(separator: ", ")) (\(reason))")
             }
         }
 

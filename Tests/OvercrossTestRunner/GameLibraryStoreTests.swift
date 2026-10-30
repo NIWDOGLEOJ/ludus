@@ -2840,5 +2840,162 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(parts[2], "4096")
         XCTAssertEqual(outcome.exitStatus, 0)
     }
+
+    func testGameOptimizationNeutralizesDirectStorageLibraries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusDStorageTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let dstorageDLL = root.appendingPathComponent("dstorage.dll")
+        let dstorageCoreDLL = root.appendingPathComponent("dstoragecore.dll")
+        let gameEXE = root.appendingPathComponent("Spider-Man2.exe")
+
+        try Data([1, 2, 3]).write(to: dstorageDLL)
+        try Data([4, 5, 6]).write(to: dstorageCoreDLL)
+        try Data([7, 8, 9]).write(to: gameEXE)
+
+        let service = GameOptimizationService()
+        let neutralized = service.neutralizeProblematicLibraries(at: root)
+
+        XCTAssertTrue(neutralized.contains("dstorage.dll"))
+        XCTAssertTrue(neutralized.contains("dstoragecore.dll"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dstorageDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dstorageCoreDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("dstorage.dll.bak").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("dstoragecore.dll.bak").path))
+
+        // Re-write to test full optimize reporting
+        try Data([1, 2, 3]).write(to: dstorageDLL)
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "spiderman-2",
+            installationURL: root,
+            executableURL: gameEXE
+        )
+        let report = service.optimize(game: game, prefixURL: root)
+        XCTAssertEqual(report.neutralizedLibraries, ["dstorage.dll"])
+        XCTAssertTrue(report.details.contains(where: { $0.contains("bypassed DirectStorage I/O spinlock") }))
+    }
+
+    func testNixxesOrSonyTitleDetection() {
+        XCTAssertTrue(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Marvel's Spider-Man 2",
+            executableURL: URL(fileURLWithPath: "/Games/Spider-Man2.exe")
+        ))
+        XCTAssertTrue(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Marvel's Spider-Man: Miles Morales",
+            executableURL: URL(fileURLWithPath: "/Games/MilesMorales.exe")
+        ))
+        XCTAssertTrue(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Ratchet & Clank: Rift Apart",
+            executableURL: URL(fileURLWithPath: "/Games/RiftApart.exe")
+        ))
+        XCTAssertTrue(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Ghost of Tsushima DIRECTOR'S CUT",
+            executableURL: URL(fileURLWithPath: "/Games/GhostOfTsushima.exe")
+        ))
+        XCTAssertTrue(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Custom Title",
+            executableURL: URL(fileURLWithPath: "/Games/nixxes_sample.exe")
+        ))
+
+        // Non-Nixxes titles
+        XCTAssertFalse(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Need for Speed: Most Wanted",
+            executableURL: URL(fileURLWithPath: "/Games/speed.exe")
+        ))
+        XCTAssertFalse(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Hogwarts Legacy",
+            executableURL: URL(fileURLWithPath: "/Games/HogwartsLegacy.exe")
+        ))
+        XCTAssertFalse(GameLaunchService.isNixxesOrSonyTitle(
+            title: "Cyberpunk 2077",
+            executableURL: URL(fileURLWithPath: "/Games/Cyberpunk2077.exe")
+        ))
+    }
+
+    func testWindowsLaunchNixxesInjectsNoLauncherAndCrossOverArguments() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusNixxesHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
+
+        // Mock CrossOver runtime script that dumps arguments and ROSETTA_ADVERTISE_AVX
+        let runtimeURL = root.appendingPathComponent("SharedSupport/CrossOver/bin/wine")
+        try FileManager.default.createDirectory(at: runtimeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$ROSETTA_ADVERTISE_AVX\" \"$*\" \"$PWD\"\n"
+            .write(to: runtimeURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeURL.path)
+
+        let executableURL = root.appendingPathComponent("Spider-Man2.exe")
+        try Data("fake exe".utf8).write(to: executableURL)
+
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "CrossOver Wine",
+            executableURL: runtimeURL,
+            winebootURL: nil,
+            version: "26.3",
+            architecture: "arm64",
+            status: "ready"
+        )
+        let prefix = WinePrefix(
+            name: "Harness prefix",
+            url: root,
+            runtimeURL: runtimeURL,
+            architecture: .win64
+        )
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "spiderman-2",
+            installationURL: root,
+            executableURL: executableURL
+        )
+
+        let outcome = try await GameLaunchService().launchWindows(
+            game: game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        let output = outcome.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = output.components(separatedBy: "|")
+        XCTAssertEqual(parts.count, 3)
+        // 1. ROSETTA_ADVERTISE_AVX is set to 1
+        XCTAssertEqual(parts[0], "1")
+        // 2. Arguments contain --bottle, --workdir, game path, and -nolauncher
+        let rawArgs = parts[1]
+        XCTAssertTrue(rawArgs.contains("--bottle Harness prefix"))
+        XCTAssertTrue(rawArgs.contains("--workdir \(root.path)"))
+        XCTAssertTrue(rawArgs.contains(executableURL.path))
+        XCTAssertTrue(rawArgs.contains("-nolauncher"))
+        XCTAssertTrue(rawArgs.contains("--dll nvngx=d"))
+        XCTAssertEqual(outcome.exitStatus, 0)
+
+        // Test non-Nixxes game does NOT inject -nolauncher or DLSS overrides
+        let speedExecutableURL = root.appendingPathComponent("speed.exe")
+        try Data("fake speed exe".utf8).write(to: speedExecutableURL)
+        let standardGame = Game(
+            title: "Standard Racing Game",
+            store: .local,
+            storeApplicationID: "racing-game",
+            installationURL: root,
+            executableURL: speedExecutableURL
+        )
+        let outcomeStandard = try await GameLaunchService().launchWindows(
+            game: standardGame,
+            runtime: runtime,
+            prefix: prefix
+        )
+        let outputStandard = outcomeStandard.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let partsStandard = outputStandard.components(separatedBy: "|")
+        XCTAssertFalse(partsStandard[1].contains("-nolauncher"))
+        XCTAssertFalse(partsStandard[1].contains("nvngx=d"))
+    }
 }
 

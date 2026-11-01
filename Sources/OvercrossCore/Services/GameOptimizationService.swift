@@ -1186,7 +1186,7 @@ struct TitleOptimizationRegistry: Sendable {
             vkd3dFeatureLevel: "12_0",
             vkd3dShaderModel: "6_6",
             enableMSync: true,
-            recommendedArguments: ["-nolauncher", "-nostreamline"],
+            recommendedArguments: ["-nolauncher", "-nostreamline", "-reducedtextureheap", "-nodmaengine"],
             notes: "Bypasses Nixxes launcher dialog and isolates Streamline/DLSS"
         ),
         // Death's Door: Unity Direct3D 11 title runs best on DXMT (direct Metal)
@@ -1254,7 +1254,7 @@ struct TitleOptimizationRegistry: Sendable {
             recommendedBackend: .d3dmetal,
             vkd3dFeatureLevel: "12_0",
             enableMSync: true,
-            recommendedArguments: ["-nolauncher", "-nostreamline"],
+            recommendedArguments: ["-nolauncher", "-nostreamline", "-reducedtextureheap", "-nodmaengine"],
             notes: "Bypasses PlayStation PC launcher and Streamline crash hooks"
         )
     ]

@@ -4236,6 +4236,7 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(sm2Rule?.recommendedBackend, .d3dmetal)
         XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-nolauncher") == true)
         XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-nostreamline") == true)
+        XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-reducedtextureheap") == true)
 
         // 4. Non-matching appID returns nil
         let nonMatch = TitleOptimizationRegistry.rule(forAppID: "99999999", executablePath: "unknown_game.exe")

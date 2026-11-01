@@ -7,10 +7,8 @@ app_path="$output_root/Ludus.app"
 dmg_path="$output_root/Ludus.dmg"
 temp_dmg_dir="$output_root/dmg_temp"
 
-if [[ ! -d "$app_path" ]]; then
-    print "Ludus.app not found in $output_root. Running package-app.sh..."
-    zsh "$project_root/scripts/package-app.sh" "$output_root"
-fi
+print "Building and packaging Ludus.app into $output_root..."
+zsh "$project_root/scripts/package-app.sh" "$output_root"
 
 rm -rf "$temp_dmg_dir" "$dmg_path"
 mkdir -p "$temp_dmg_dir"

@@ -2,6 +2,9 @@ import Foundation
 #if canImport(CoreGraphics)
 import CoreGraphics
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct GameLaunchOutcome: Sendable {
     let exitStatus: Int32
@@ -95,7 +98,8 @@ struct GameLaunchService: Sendable {
             executableURL: executableURL,
             arguments: game.customLaunchArguments,
             workingDirectory: game.installationURL ?? executableURL.deletingLastPathComponent(),
-            environment: game.customEnvironment.isEmpty ? nil : environment
+            environment: game.customEnvironment.isEmpty ? nil : environment,
+            gameTitle: game.title
         )
     }
 
@@ -221,7 +225,25 @@ struct GameLaunchService: Sendable {
         }
 
         environment["CX_BOTTLE"] = prefix.name
-        environment["CX_BOTTLE_PATH"] = prefix.url.deletingLastPathComponent().path
+        let parentBottleDir = prefix.url.deletingLastPathComponent().path
+        var bottlePaths = [parentBottleDir]
+        let userBottleDir = ("~/Library/Application Support/CrossOver/Bottles" as NSString).expandingTildeInPath
+        if FileManager.default.fileExists(atPath: userBottleDir) && !bottlePaths.contains(userBottleDir) {
+            bottlePaths.append(userBottleDir)
+        }
+        if prefix.name != prefix.url.lastPathComponent {
+            let parentAlias = URL(fileURLWithPath: parentBottleDir).appendingPathComponent(prefix.name)
+            if !FileManager.default.fileExists(atPath: parentAlias.path) {
+                try? FileManager.default.createSymbolicLink(at: parentAlias, withDestinationURL: prefix.url)
+            }
+            if FileManager.default.fileExists(atPath: userBottleDir) {
+                let userAlias = URL(fileURLWithPath: userBottleDir).appendingPathComponent(prefix.name)
+                if !FileManager.default.fileExists(atPath: userAlias.path) {
+                    try? FileManager.default.createSymbolicLink(at: userAlias, withDestinationURL: prefix.url)
+                }
+            }
+        }
+        environment["CX_BOTTLE_PATH"] = bottlePaths.joined(separator: ":")
 
         // CrossOver runtime engine environment
         var cxRootURL: URL?
@@ -245,6 +267,10 @@ struct GameLaunchService: Sendable {
 
         // DirectX graphics backend (d3dmetal vs dxvk vs dxmt)
         // Per-game user configuration takes top precedence over default profile recommendations
+        let titleRule = TitleOptimizationRegistry.rule(
+            forAppID: game.storeApplicationID,
+            executablePath: game.executableURL?.path ?? executableURL.path
+        )
         let backend: GraphicsBackend
         if let gameBackendStr = game.graphicsBackend,
            let parsed = GraphicsBackend(rawValue: gameBackendStr),
@@ -261,6 +287,9 @@ struct GameLaunchService: Sendable {
         } else if let profileBackend = profile?.graphicsBackend,
                   profileBackend != .automatic && profileBackend != .unknown {
             backend = profileBackend
+        } else if let ruleBackend = titleRule?.recommendedBackend,
+                  ruleBackend != GraphicsBackend.automatic && ruleBackend != GraphicsBackend.unknown {
+            backend = ruleBackend
         } else if let appDefault = appSettings?.defaultGraphicsBackend,
                   appDefault != .automatic && appDefault != .unknown {
             backend = appDefault
@@ -276,7 +305,15 @@ struct GameLaunchService: Sendable {
             environment["WINED3DMETAL"] = "1"
             environment.removeValue(forKey: "WINEDXVK")
             environment.removeValue(forKey: "WINEDXMT")
-            requiredOverrides = "d3d12,d3d11,dxgi=native"
+            requiredOverrides = "d3d12,d3d11,dxgi=native,builtin"
+            if let cxRoot = cxRootURL {
+                let gptkWin = cxRoot.appendingPathComponent("lib64/apple_gptk/wine/x86_64-windows").path
+                let gptkUnix = cxRoot.appendingPathComponent("lib64/apple_gptk/wine/x86_64-unix").path
+                if FileManager.default.fileExists(atPath: gptkWin),
+                   let currentPath = environment["WINEDLLPATH"] {
+                    environment["WINEDLLPATH"] = "\(gptkWin):\(gptkUnix):\(currentPath)"
+                }
+            }
         case .dxvk:
             environment["OVERCROSS_GRAPHICS_BACKEND"] = "dxvk"
             environment["CX_GRAPHICS_BACKEND"] = "dxvk"
@@ -286,14 +323,14 @@ struct GameLaunchService: Sendable {
             }
             environment.removeValue(forKey: "WINED3DMETAL")
             environment.removeValue(forKey: "WINEDXMT")
-            requiredOverrides = "d3d11,dxgi=native"
+            requiredOverrides = "d3d11,dxgi=native,builtin"
         case .dxmt:
             environment["OVERCROSS_GRAPHICS_BACKEND"] = "dxmt"
             environment["CX_GRAPHICS_BACKEND"] = "dxmt"
             environment["WINEDXMT"] = "1"
             environment.removeValue(forKey: "WINED3DMETAL")
             environment.removeValue(forKey: "WINEDXVK")
-            requiredOverrides = "d3d11,dxgi=native"
+            requiredOverrides = "d3d11,dxgi=native,builtin"
         default:
             environment.removeValue(forKey: "OVERCROSS_GRAPHICS_BACKEND")
             environment.removeValue(forKey: "CX_GRAPHICS_BACKEND")
@@ -332,6 +369,44 @@ struct GameLaunchService: Sendable {
             environment["DXVK_STATE_CACHE"] = "1"
         }
 
+        // Apply Title Optimization Rules (Direct3D 12 Feature Levels, Shader Model, etc.)
+        if let titleRule {
+            if let level = titleRule.vkd3dFeatureLevel, environment["VKD3D_FEATURE_LEVEL"] == nil {
+                environment["VKD3D_FEATURE_LEVEL"] = level
+            }
+            if let sm = titleRule.vkd3dShaderModel, environment["VKD3D_SHADER_MODEL"] == nil {
+                environment["VKD3D_SHADER_MODEL"] = sm
+            }
+            if let ext = titleRule.vkd3dDisableExtensions, environment["VKD3D_DISABLE_EXTENSIONS"] == nil {
+                environment["VKD3D_DISABLE_EXTENSIONS"] = ext
+            }
+            if titleRule.dxvkAsync == true && environment["DXVK_ASYNC"] == nil {
+                environment["DXVK_ASYNC"] = "1"
+            }
+            for (key, val) in titleRule.additionalEnvironment where environment[key] == nil {
+                environment[key] = val
+            }
+        }
+
+        // Steamworks Native Bridge Environment
+        if (appSettings?.steamworksBridgeEnabled ?? true) && (game.store == .steam || game.storeApplicationID != nil) {
+            let steamEnv = SteamworksBridgeService.steamworksEnvironment(for: game.storeApplicationID)
+            for (key, val) in steamEnv where environment[key] == nil {
+                environment[key] = val
+            }
+        }
+
+        // GStreamer & FFmpeg Media Foundation Transcoding Setup
+        let gstPaths = [
+            "/Library/Frameworks/GStreamer.framework/Libraries",
+            "/opt/homebrew/lib/gstreamer-1.0",
+            "/usr/local/lib/gstreamer-1.0"
+        ]
+        if let foundGst = gstPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            environment["GST_PLUGIN_SYSTEM_PATH"] = foundGst
+            environment["WINE_GST_DEBUG"] = "0"
+        }
+
         // Low-latency Audio Stability & Stutter Protection
         environment["STAGING_AUDIO_DURATION"] = "100000"
         environment["WINEAUDIO_BUFFER_SIZE"] = "4096"
@@ -354,6 +429,9 @@ struct GameLaunchService: Sendable {
             environment.removeValue(forKey: "WINE_ALLOW_HIGHDPI")
         }
 
+        // Preflight cleanup of any stale/lingering Wine daemon or orphan helper processes (winedevice.exe, etc.)
+        WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
+
         // Synchronize bottle registry (macOS Spaces Native Fullscreen, mouse confinement, DirectSound buffers, Retina)
         _ = try? WineBottleService.syncBottleRegistry(prefixURL: prefix.url, retina: retinaEnabled)
 
@@ -374,9 +452,6 @@ struct GameLaunchService: Sendable {
         if launchExecutableURL != executableURL {
             diagnosticNotes.append("Using nested Windows executable (\(launchExecutableURL.lastPathComponent)).")
         }
-
-        // Preflight cleanup of any stale/lingering Wine daemon or orphan helper processes (winedevice.exe, etc.)
-        WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
 
         // Automatic Game Optimization (problematic DLL neutralization & memory/streaming tuning)
         let optimizationReport = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
@@ -422,8 +497,10 @@ struct GameLaunchService: Sendable {
         var dllOverrides = environment["WINEDLLOVERRIDES"] ?? ""
         let localD3D12 = workingDir.appendingPathComponent("d3d12.dll")
         if FileManager.default.fileExists(atPath: localD3D12.path) || isNixxes {
-            if dllOverrides.contains("d3d12,d3d11,dxgi=native") {
-                dllOverrides = dllOverrides.replacingOccurrences(of: "d3d12,d3d11,dxgi=native", with: "d3d11,dxgi=native")
+            if dllOverrides.contains("d3d12,d3d11,dxgi=native,builtin") {
+                dllOverrides = dllOverrides.replacingOccurrences(of: "d3d12,d3d11,dxgi=native,builtin", with: "d3d11,dxgi=native,builtin")
+            } else if dllOverrides.contains("d3d12,d3d11,dxgi=native") {
+                dllOverrides = dllOverrides.replacingOccurrences(of: "d3d12,d3d11,dxgi=native", with: "d3d11,dxgi=native,builtin")
             }
             if !dllOverrides.contains("d3d12") {
                 let d3d12Override = "d3d12=native,builtin"
@@ -438,7 +515,22 @@ struct GameLaunchService: Sendable {
             dllOverrides = dllOverrides.isEmpty ? nixxesDllOverrides : "\(nixxesDllOverrides);\(dllOverrides)"
         }
 
-        if runtime.executableURL.path.contains("SharedSupport/CrossOver") {
+        // Normalize dxgi, d3d11, and d3d12 overrides to allow builtin fallback in CrossOver / GPTK
+        // to prevent NTSTATUS 0xC0000135 (STATUS_DLL_NOT_FOUND -> exit code 53).
+        dllOverrides = Self.normalizeDllOverrides(dllOverrides)
+
+        let isCrossOverWine = runtime.executableURL.path.contains("SharedSupport/CrossOver") ||
+                              runtime.executableURL.path.contains("CrossOver") ||
+                              runtime.name.localizedCaseInsensitiveContains("CrossOver") ||
+                              runtime.version.localizedCaseInsensitiveContains("CrossOver") ||
+                              (cxRootURL != nil && runtime.executableURL.lastPathComponent == "wine")
+        if (appSettings?.steamworksBridgeEnabled ?? true) && (game.store == .steam || game.storeApplicationID != nil) {
+            if !dllOverrides.contains("steam_api") {
+                dllOverrides = dllOverrides.isEmpty ? SteamworksBridgeService.steamworksDllOverrides : "\(dllOverrides);\(SteamworksBridgeService.steamworksDllOverrides)"
+            }
+        }
+
+        if isCrossOverWine {
             winePreArguments.append(contentsOf: ["--bottle", prefix.name])
             winePreArguments.append(contentsOf: ["--workdir", workingDir.path])
             if !dllOverrides.isEmpty {
@@ -450,10 +542,39 @@ struct GameLaunchService: Sendable {
         }
 
         var gameLaunchArgs = (profile?.launchArguments ?? []) + game.customLaunchArguments + additionalArguments
+        if let titleRule {
+            for arg in titleRule.recommendedArguments {
+                if !gameLaunchArgs.contains(arg) {
+                    gameLaunchArgs.append(arg)
+                }
+            }
+        }
         if isNixxes {
             if !gameLaunchArgs.contains("-nolauncher") {
                 gameLaunchArgs.append("-nolauncher")
             }
+            if !gameLaunchArgs.contains("-noStreamline") {
+                gameLaunchArgs.append("-noStreamline")
+            }
+            if !gameLaunchArgs.contains("-nodmaengine") {
+                gameLaunchArgs.append("-nodmaengine")
+            }
+        }
+
+        var dlssIsolation: CrossOverDLSSIsolation?
+        if isNixxes {
+            dlssIsolation = GameOptimizationService.isolateCrossOverDLSS(
+                cxRootURL: cxRootURL,
+                runtimeExecutableURL: runtimeExecutableURL
+            )
+        } else {
+            GameOptimizationService.restoreAllIsolatedDLSSStubs(
+                cxRootURL: cxRootURL,
+                runtimeExecutableURL: runtimeExecutableURL
+            )
+        }
+        defer {
+            dlssIsolation?.restore()
         }
 
         if environment["ROSETTA_ADVERTISE_AVX"] == nil {
@@ -468,10 +589,11 @@ struct GameLaunchService: Sendable {
         let centerPoint = CGPoint(x: displayBounds.midX, y: displayBounds.midY)
         CGWarpMouseCursorPosition(centerPoint)
 
+        let isSM2 = GameOptimizationService.isSpiderMan2(title: game.title, executableURL: launchExecutableURL)
         let modalWatcher = startPreflightModalWatcher(
             processName: launchExecutableURL.deletingPathExtension().lastPathComponent,
-            enabled: isNixxes,
-            timeoutSeconds: isNixxes ? 60.0 : 30.0
+            enabled: isNixxes && !isSM2,
+            timeoutSeconds: 30.0
         )
         defer { modalWatcher.cancel() }
         #endif
@@ -485,7 +607,8 @@ struct GameLaunchService: Sendable {
             executableURL: runtimeExecutableURL,
             arguments: arguments,
             workingDirectory: workingDir,
-            environment: environment
+            environment: environment,
+            gameTitle: game.title
         )
         if let audioAnalysis = Self.analyzeAudioDiagnostics(
             standardOutput: outcome.standardOutput,
@@ -520,6 +643,67 @@ struct GameLaunchService: Sendable {
         return keywords.contains { t.contains($0) || exe.contains($0) }
     }
 
+    static func evaluateWindowForModalPreflight(
+        ownerName: String,
+        windowName: String,
+        bounds: (x: Double, y: Double, width: Double, height: Double),
+        targetProcessName: String,
+        isOnScreen: Bool = true
+    ) -> (isDialog: Bool, isGameWindow: Bool) {
+        guard isOnScreen else {
+            return (false, false)
+        }
+
+        let lowerTarget = targetProcessName.lowercased()
+        let lowerOwner = ownerName.lowercased()
+        let lowerTitle = windowName.lowercased()
+
+        // Explicitly reject known host macOS developer tools, editors, browsers, terminals, and OS processes
+        let isHostApp = lowerOwner.contains("antigravity") ||
+                        lowerOwner.contains("xcode") ||
+                        lowerOwner.contains("code") ||
+                        lowerOwner.contains("terminal") ||
+                        lowerOwner.contains("iterm") ||
+                        lowerOwner.contains("chrome") ||
+                        lowerOwner.contains("safari") ||
+                        lowerOwner.contains("arc") ||
+                        lowerOwner.contains("finder") ||
+                        lowerOwner.contains("system settings")
+        if isHostApp {
+            return (false, false)
+        }
+
+        let matchesOwner = lowerOwner.contains(lowerTarget) ||
+                           lowerOwner.contains("wine") ||
+                           lowerOwner.contains("crossover") ||
+                           lowerOwner.contains("spider") ||
+                           lowerOwner.contains("nixxes")
+
+        let isTargetedTitle = (!lowerTarget.isEmpty && lowerTitle.contains(lowerTarget)) ||
+                              lowerTitle.contains("spider-man") ||
+                              lowerTitle.contains("marvel's spider")
+
+        // Only windows that genuinely belong to the Wine/CrossOver/game process or explicitly name the target game
+        guard matchesOwner || (isTargetedTitle && (lowerOwner.contains("wine") || lowerOwner.contains("preloader") || lowerOwner.contains(".exe"))) else {
+            return (false, false)
+        }
+
+        let width = bounds.width
+        let height = bounds.height
+
+        // Full resolution render/game window
+        if height > 520 && width >= 600 {
+            return (false, true)
+        }
+
+        // Modal preflight alert / warning / error dialog
+        if height >= 60 && height <= 520 && width >= 120 && width <= 900 {
+            return (true, false)
+        }
+
+        return (false, false)
+    }
+
     #if canImport(CoreGraphics)
     private func startPreflightModalWatcher(
         processName: String,
@@ -533,15 +717,16 @@ struct GameLaunchService: Sendable {
         let task = Task.detached { [processName] in
             let startTime = Date()
             let lowerTarget = processName.lowercased()
-            var consecutiveCleanChecks = 0
+            var tickCount = 0
 
             while !Task.isCancelled {
                 if Date().timeIntervalSince(startTime) > timeoutSeconds {
                     break
                 }
 
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 200_000_000)
                 if Task.isCancelled { break }
+                tickCount += 1
 
                 guard let windowInfoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
                     continue
@@ -550,86 +735,154 @@ struct GameLaunchService: Sendable {
                 var hasDialog = false
                 var foundGameWindow = false
                 var dialogBounds: (x: Double, y: Double, w: Double, h: Double)?
+                var dialogPid: pid_t?
+                var gamePid: pid_t?
 
                 for window in windowInfoList {
-                    let ownerName = (window[kCGWindowOwnerName as String] as? String ?? "").lowercased()
-                    let windowName = (window[kCGWindowName as String] as? String ?? "").lowercased()
+                    let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
+                    let windowName = window[kCGWindowName as String] as? String ?? ""
+                    let ownerPid = window[kCGWindowOwnerPID as String] as? pid_t
+                    let isOnScreen = (window[kCGWindowIsOnscreen as String] as? Bool) ??
+                                     ((window[kCGWindowIsOnscreen as String] as? Int) == 1)
 
-                    let matchesOwner = ownerName.contains(lowerTarget) || ownerName.contains("wine") || ownerName.contains("crossover") || ownerName.contains("spider")
-                    let matchesTitle = windowName.contains(lowerTarget) || windowName.contains("spider") || windowName.contains("marvel") || windowName.contains("wine")
+                    guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                          let height = boundsDict["Height"] as? Double,
+                          let width = boundsDict["Width"] as? Double,
+                          let x = boundsDict["X"] as? Double,
+                          let y = boundsDict["Y"] as? Double else {
+                        continue
+                    }
 
-                    guard matchesOwner || matchesTitle else { continue }
+                    let eval = Self.evaluateWindowForModalPreflight(
+                        ownerName: ownerName,
+                        windowName: windowName,
+                        bounds: (x: x, y: y, width: width, height: height),
+                        targetProcessName: lowerTarget,
+                        isOnScreen: isOnScreen
+                    )
 
-                    if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
-                       let height = boundsDict["Height"] as? Double,
-                       let width = boundsDict["Width"] as? Double,
-                       let x = boundsDict["X"] as? Double,
-                       let y = boundsDict["Y"] as? Double {
-                        if height >= 80 && height <= 450 && width >= 150 && width <= 800 {
-                            hasDialog = true
-                            dialogBounds = (x, y, width, height)
-                        } else if height >= 450 && width >= 600 {
-                            foundGameWindow = true
-                        }
+                    if eval.isDialog {
+                        hasDialog = true
+                        dialogBounds = (x, y, width, height)
+                        dialogPid = ownerPid
+                    } else if eval.isGameWindow {
+                        foundGameWindow = true
+                        gamePid = ownerPid
                     }
                 }
 
                 if hasDialog {
-                    consecutiveCleanChecks = 0
-                    // 1. Synthesize direct Quartz mouse clicks on dialog's button area
+                    #if canImport(AppKit)
+                    if let pid = dialogPid, let app = NSRunningApplication(processIdentifier: pid) {
+                        if #available(macOS 14.0, *) {
+                            NSApp.yieldActivation(to: app)
+                            app.activate()
+                        } else {
+                            app.activate(options: .activateIgnoringOtherApps)
+                        }
+                    } else {
+                        for app in NSWorkspace.shared.runningApplications {
+                            let name = (app.localizedName ?? "").lowercased()
+                            if name.contains("wine") || name.contains("crossover") || name.contains("spider") || name.contains(lowerTarget) {
+                                if #available(macOS 14.0, *) {
+                                    NSApp.yieldActivation(to: app)
+                                    app.activate()
+                                } else {
+                                    app.activate(options: .activateIgnoringOtherApps)
+                                }
+                                break
+                            }
+                        }
+                    }
+                    #endif
+
+                    // 1. Post direct Quartz Return (36), Space (49), and Keypad Enter (76) to the dialog's PID
+                    if let pid = dialogPid {
+                        for keyCode: CGKeyCode in [36, 49, 76] {
+                            if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+                               let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                                down.postToPid(pid)
+                                usleep(15_000)
+                                up.postToPid(pid)
+                            }
+                        }
+                    }
+
+                    // 2. Synthesize direct Quartz mouse clicks on dialog's affirmative button area
+                    // Click ONLY affirmative actions (OK, Yes, Continue) located at center-left (~38% to ~50% width)
+                    // NEVER click right-aligned buttons (e.g. Cancel, Abort, Exit)
                     if let db = dialogBounds {
                         let clickPoints = [
-                            CGPoint(x: db.x + (db.w / 2.0), y: db.y + db.h - 35.0),
-                            CGPoint(x: db.x + (db.w / 2.0) - 50.0, y: db.y + db.h - 35.0),
-                            CGPoint(x: db.x + db.w - 80.0, y: db.y + db.h - 35.0)
+                            CGPoint(x: db.x + (db.w * 0.38), y: db.y + db.h - 35.0),
+                            CGPoint(x: db.x + (db.w * 0.50), y: db.y + db.h - 35.0),
+                            CGPoint(x: db.x + (db.w * 0.30), y: db.y + db.h - 35.0)
                         ]
                         for pt in clickPoints {
                             if let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: pt, mouseButton: .left),
                                let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: pt, mouseButton: .left) {
+                                if let pid = dialogPid {
+                                    down.postToPid(pid)
+                                    usleep(15_000)
+                                    up.postToPid(pid)
+                                }
                                 down.post(tap: .cghidEventTap)
-                                usleep(25_000)
+                                usleep(15_000)
                                 up.post(tap: .cghidEventTap)
                             }
                         }
                     }
 
-                    // 2. Synthesize direct Quartz Return and Space keystrokes
-                    for keyCode: CGKeyCode in [36, 49] {
+                    // 3. Fallback broadcast keystrokes via session event taps
+                    for keyCode: CGKeyCode in [36, 49, 76] {
                         if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
                            let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                            down.post(tap: .cgSessionEventTap)
                             down.post(tap: .cghidEventTap)
-                            usleep(25_000)
+                            usleep(15_000)
+                            up.post(tap: .cgSessionEventTap)
                             up.post(tap: .cghidEventTap)
                         }
                     }
 
-                    // 3. Auxiliary AppleScript key dispatch
-                    let appleScript = """
-                    tell application "System Events"
-                        set procs to (every process whose name contains "\(processName)" or name contains "wine" or name contains "Spider")
-                        repeat with p in procs
-                            try
-                                tell p
-                                    set frontmost to true
-                                    delay 0.05
-                                    key code 36
-                                end tell
-                            end try
-                        end repeat
-                    end tell
-                    """
-                    let scriptProcess = Process()
-                    scriptProcess.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                    scriptProcess.arguments = ["-e", appleScript]
-                    try? scriptProcess.run()
-                    scriptProcess.waitUntilExit()
-
-                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
                 } else if foundGameWindow {
-                    consecutiveCleanChecks += 1
-                    let elapsed = Date().timeIntervalSince(startTime)
-                    if consecutiveCleanChecks >= 15 && elapsed >= 20.0 {
-                        break
+                    #if canImport(AppKit)
+                    if let pid = gamePid, let app = NSRunningApplication(processIdentifier: pid) {
+                        if #available(macOS 14.0, *) {
+                            NSApp.yieldActivation(to: app)
+                            app.activate()
+                        } else {
+                            app.activate(options: .activateIgnoringOtherApps)
+                        }
+                    } else {
+                        for app in NSWorkspace.shared.runningApplications {
+                            let name = (app.localizedName ?? "").lowercased()
+                            if name.contains("spider") || name.contains("wine") || name.contains(lowerTarget) {
+                                if #available(macOS 14.0, *) {
+                                    NSApp.yieldActivation(to: app)
+                                    app.activate()
+                                } else {
+                                    app.activate(options: .activateIgnoringOtherApps)
+                                }
+                                break
+                            }
+                        }
+                    }
+                    #endif
+
+                    // Once the game window is active, do NOT synthesize mouse clicks or warp cursor,
+                    // as that interferes with AppKit event loop during Metal swapchain creation.
+                    // Gently send Return (36) and Space (49) ONLY to the game PID after 8 seconds (tickCount > 40)
+                    // to advance past splash logos, without broadcasting to global event taps.
+                    if tickCount > 40 && tickCount % 10 == 0, let pid = gamePid {
+                        for keyCode: CGKeyCode in [36, 49] {
+                            if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+                               let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                                down.postToPid(pid)
+                                usleep(15_000)
+                                up.postToPid(pid)
+                            }
+                        }
                     }
                 }
             }
@@ -771,11 +1024,71 @@ struct GameLaunchService: Sendable {
         return machine == 0x014c
     }
 
+    static func normalizeDllOverrides(_ rawOverrides: String) -> String {
+        let criticalBuiltins: Set<String> = ["dxgi", "d3d11", "d3d12"]
+        let entries = rawOverrides.components(separatedBy: ";")
+        var normalizedEntries: [String] = []
+
+        for entry in entries {
+            let trimmed = entry.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+
+            guard let eqIndex = trimmed.firstIndex(of: "=") else {
+                normalizedEntries.append(trimmed)
+                continue
+            }
+
+            let keysPart = String(trimmed[..<eqIndex])
+            let valsPart = String(trimmed[trimmed.index(after: eqIndex)...])
+
+            let dllNames = keysPart.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            let lowerDllNames = dllNames.map { $0.lowercased() }
+
+            let hasCriticalBuiltin = lowerDllNames.contains { criticalBuiltins.contains($0) }
+            if hasCriticalBuiltin {
+                let types = valsPart.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                let isStrictlyNative = (types.contains("native") || types.contains("n")) &&
+                                       !types.contains("builtin") && !types.contains("b") &&
+                                       !types.contains("disabled") && !types.contains("d") &&
+                                       !types.contains("")
+
+                if isStrictlyNative {
+                    normalizedEntries.append("\(keysPart)=native,builtin")
+                } else {
+                    normalizedEntries.append(trimmed)
+                }
+            } else {
+                normalizedEntries.append(trimmed)
+            }
+        }
+
+        return normalizedEntries.joined(separator: ";")
+    }
+
+    @discardableResult
+    static func freezeGame(pid: pid_t) -> Bool {
+        GameProcessManager.shared.freezeProcess(pid: pid)
+    }
+
+    @discardableResult
+    static func thawGame(pid: pid_t) -> Bool {
+        GameProcessManager.shared.thawProcess(pid: pid)
+    }
+
+    static func isGameFrozen(pid: pid_t) -> Bool {
+        GameProcessManager.shared.isFrozen(pid: pid)
+    }
+
+    static func activeGamePIDs() -> [pid_t] {
+        GameProcessManager.shared.activeGamePIDs()
+    }
+
     private func launchProcess(
         executableURL: URL,
         arguments: [String],
         workingDirectory: URL,
-        environment: [String: String]?
+        environment: [String: String]?,
+        gameTitle: String = "Game"
     ) async throws -> GameLaunchOutcome {
         let control = LaunchProcessControl()
         return try await withTaskCancellationHandler(operation: {
@@ -788,13 +1101,10 @@ struct GameLaunchService: Sendable {
             defer {
                 ProcessInfo.processInfo.endActivity(activity)
             }
-            let temporaryDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("LudusLaunch-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
-
-            let outputURL = temporaryDirectory.appendingPathComponent("stdout.log")
-            let errorURL = temporaryDirectory.appendingPathComponent("stderr.log")
+            let outputURL = URL(fileURLWithPath: "/tmp/ludus_sm2_stdout.log")
+            let errorURL = URL(fileURLWithPath: "/tmp/ludus_sm2_stderr.log")
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
             FileManager.default.createFile(atPath: outputURL.path, contents: nil)
             FileManager.default.createFile(atPath: errorURL.path, contents: nil)
             let outputFile = try FileHandle(forWritingTo: outputURL)
@@ -813,8 +1123,12 @@ struct GameLaunchService: Sendable {
 
             do {
                 try process.run()
+                GameProcessManager.shared.register(process: process, gameTitle: gameTitle)
             } catch {
                 throw GameLaunchError.couldNotStart(error.localizedDescription)
+            }
+            defer {
+                GameProcessManager.shared.unregister(pid: process.processIdentifier)
             }
 
             control.install(process)

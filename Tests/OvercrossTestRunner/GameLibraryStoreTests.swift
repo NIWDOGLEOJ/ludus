@@ -1,4 +1,13 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(Metal)
+import Metal
+#endif
 @testable import OvercrossCore
 
 final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
@@ -3046,6 +3055,28 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         let newSectionText = newSectionMerged.joined(separator: "\n")
         XCTAssertTrue(newSectionText.contains("[Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides]"))
         XCTAssertTrue(newSectionText.contains("\"d3d12\"=\"native,builtin\""))
+
+        // Multiline continuation replacement test
+        let multilineOriginal = [
+            "[System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_106B&DEV_03F1\\\\00000000\\\\Properties\\\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\\\0008] 1793062733",
+            "#time=1dd65ae5624f786",
+            "@=hex(ffff0012):50,00,43,00,49,00,5c,00,\\",
+            "  00,42,00,26,00,\\",
+            "  00,00,00,00",
+            "",
+            "[System\\\\CurrentControlSet\\\\NextKey] 1793062733",
+            "\"Key\"=\"Val\""
+        ]
+        let multilineMerged = WineBottleService.mergeRegistrySection(
+            named: "System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_106B&DEV_03F1\\\\00000000\\\\Properties\\\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\\\0008",
+            settings: ["@": "hex(ffff0012):new_value"],
+            into: multilineOriginal
+        )
+        let multiText = multilineMerged.joined(separator: "\n")
+        XCTAssertTrue(multiText.contains("@=hex(ffff0012):new_value"))
+        XCTAssertFalse(multiText.contains("00,42,00,26,00"))
+        XCTAssertFalse(multiText.contains("00,00,00,00"))
+        XCTAssertTrue(multiText.contains("[System\\\\CurrentControlSet\\\\NextKey]"))
     }
 
     func testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy() async throws {
@@ -3108,19 +3139,102 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
 
         // 1. WINEDLLOVERRIDES contains all critical components:
         // - nvngx=d (disables DLSS crashes)
-        // - dxgi=native (connects swapchain to D3DMetal)
-        // - d3d11=native
+        // - dxgi=native,builtin (connects swapchain to D3DMetal with builtin fallback)
+        // - d3d11,dxgi=native,builtin
         // - d3d12=native,builtin (loads local proxy shim)
         XCTAssertTrue(envOverrides.contains("nvngx=d"))
-        XCTAssertTrue(envOverrides.contains("dxgi=native"))
+        XCTAssertTrue(envOverrides.contains("dxgi=native,builtin"))
         XCTAssertTrue(envOverrides.contains("d3d12=native,builtin"))
 
         // 2. CrossOver arguments contain consolidated --dll option matching overrides
         XCTAssertTrue(rawArgs.contains("--dll nvngx=d"))
-        XCTAssertTrue(rawArgs.contains("dxgi=native"))
+        XCTAssertTrue(rawArgs.contains("dxgi=native,builtin"))
         XCTAssertTrue(rawArgs.contains("d3d12=native,builtin"))
         XCTAssertTrue(rawArgs.contains("-nolauncher"))
         XCTAssertEqual(outcome.exitStatus, 0)
+    }
+
+    func testWindowsLaunchNormalizesBareNativeDXGIAndD3D11ToBuiltinFallback() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusBareOverrideHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
+
+        let runtimeURL = root.appendingPathComponent("SharedSupport/CrossOver/bin/wine")
+        try FileManager.default.createDirectory(at: runtimeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$WINEDLLOVERRIDES\" \"$*\" \"$PWD\"\n"
+            .write(to: runtimeURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeURL.path)
+
+        let executableURL = root.appendingPathComponent("game.exe")
+        try Data("fake exe".utf8).write(to: executableURL)
+
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "CrossOver Wine",
+            executableURL: runtimeURL,
+            winebootURL: nil,
+            version: "26.3",
+            architecture: "arm64",
+            status: "ready"
+        )
+        let prefix = WinePrefix(
+            name: "Harness prefix",
+            url: root,
+            runtimeURL: runtimeURL,
+            architecture: .win64
+        )
+        let game = Game(
+            title: "Generic DX12 Game",
+            store: .local,
+            storeApplicationID: "dx12-game",
+            installationURL: root,
+            executableURL: executableURL,
+            graphicsBackend: "d3dmetal",
+            customEnvironment: ["WINEDLLOVERRIDES": "dxgi=native;d3d12=n;vcruntime140=native"]
+        )
+
+        let outcome = try await GameLaunchService().launchWindows(
+            game: game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        let output = outcome.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = output.components(separatedBy: "|")
+        XCTAssertEqual(parts.count, 3)
+
+        let envOverrides = parts[0]
+        let rawArgs = parts[1]
+
+        // dxgi=native and d3d11=native and d3d12=n should always have ,builtin appended to avoid NTSTATUS 0xC0000135 (exit code 53)
+        XCTAssertTrue(envOverrides.contains("dxgi=native,builtin"))
+        XCTAssertTrue(envOverrides.contains("d3d12=native,builtin"))
+        XCTAssertTrue(envOverrides.contains("vcruntime140=native"))
+        XCTAssertTrue(rawArgs.contains("dxgi=native,builtin"))
+        XCTAssertTrue(rawArgs.contains("d3d12=native,builtin"))
+        XCTAssertEqual(outcome.exitStatus, 0)
+
+        // Comprehensive direct unit test coverage for normalizeDllOverrides
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("dxgi=native"), "dxgi=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("dxgi=n"), "dxgi=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d11=native"), "d3d11=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d11=n"), "d3d11=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d12=native"), "d3d12=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d12=n"), "d3d12=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d11,dxgi=native"), "d3d11,dxgi=native,builtin")
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("d3d12,d3d11,dxgi=n"), "d3d12,d3d11,dxgi=native,builtin")
+        XCTAssertEqual(
+            GameLaunchService.normalizeDllOverrides("dxgi=native;d3d11=native;dxgi=native,builtin"),
+            "dxgi=native,builtin;d3d11=native,builtin;dxgi=native,builtin"
+        )
+        XCTAssertEqual(
+            GameLaunchService.normalizeDllOverrides("vcruntime140=native;msvcp140=n;nvngx=d"),
+            "vcruntime140=native;msvcp140=n;nvngx=d"
+        )
+        XCTAssertEqual(GameLaunchService.normalizeDllOverrides("dxgi=builtin;d3d11=b"), "dxgi=builtin;d3d11=b")
     }
 
     func testSyncDefaultBottleRegistry() throws {
@@ -3132,5 +3246,1187 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
             XCTAssertFalse(content.contains("\"DynamicResolutionTargetFPS\"=dword:0000001e"))
         }
     }
+
+    func testCrossOverDLSSIsolationAndRestoration() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CrossOverDLSSIsolationTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let gptkDir = tempRoot.appendingPathComponent("lib64/apple_gptk/wine/x86_64-windows", isDirectory: true)
+        let dxmtDir = tempRoot.appendingPathComponent("lib/dxmt/x86_64-windows", isDirectory: true)
+        try FileManager.default.createDirectory(at: gptkDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dxmtDir, withIntermediateDirectories: true)
+
+        let gptkDLL = gptkDir.appendingPathComponent("nvngx.dll")
+        let dxmtDLL = dxmtDir.appendingPathComponent("nvngx.dll")
+        try Data("gptk nvngx stub".utf8).write(to: gptkDLL)
+        try Data("dxmt nvngx stub".utf8).write(to: dxmtDLL)
+
+        // 1. Isolate
+        let isolation = GameOptimizationService.isolateCrossOverDLSS(cxRootURL: tempRoot)
+        XCTAssertEqual(isolation.isolatedPaths.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dxmtDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gptkDir.appendingPathComponent("nvngx.dll.isolated").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dxmtDir.appendingPathComponent("nvngx.dll.isolated").path))
+
+        // 2. Restore
+        let restored = isolation.restore()
+        XCTAssertEqual(restored.count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dxmtDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gptkDir.appendingPathComponent("nvngx.dll.isolated").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dxmtDir.appendingPathComponent("nvngx.dll.isolated").path))
+
+        // 3. Test recovery of orphaned .disabled or .isolated files
+        let disabledFile = gptkDir.appendingPathComponent("nvngx.dll.disabled")
+        try FileManager.default.moveItem(at: gptkDLL, to: disabledFile)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: disabledFile.path))
+
+        let globalRestored = GameOptimizationService.restoreAllIsolatedDLSSStubs(cxRootURL: tempRoot)
+        XCTAssertTrue(globalRestored.contains(gptkDLL))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: disabledFile.path))
+    }
+
+    func testNixxesLaunchInjectsNoStreamlineAndRestoresIsolation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusNixxesStreamlineHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("drive_c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("registry".utf8).write(to: root.appendingPathComponent("system.reg"))
+
+        let runtimeURL = root.appendingPathComponent("SharedSupport/CrossOver/bin/wine")
+        try FileManager.default.createDirectory(at: runtimeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\nprintf '%s|%s\\n' \"$*\" \"$PWD\"\n"
+            .write(to: runtimeURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeURL.path)
+
+        // Create mock GPTK nvngx stub under runtime root
+        let gptkDir = root.appendingPathComponent("SharedSupport/CrossOver/lib64/apple_gptk/wine/x86_64-windows", isDirectory: true)
+        try FileManager.default.createDirectory(at: gptkDir, withIntermediateDirectories: true)
+        let stubURL = gptkDir.appendingPathComponent("nvngx.dll")
+        try Data("gptk stub".utf8).write(to: stubURL)
+
+        let executableURL = root.appendingPathComponent("Spider-Man2.exe")
+        try Data("fake exe".utf8).write(to: executableURL)
+
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "CrossOver Wine",
+            executableURL: runtimeURL,
+            winebootURL: nil,
+            version: "26.3",
+            architecture: "arm64",
+            status: "ready"
+        )
+        let prefix = WinePrefix(
+            name: "Harness prefix",
+            url: root,
+            runtimeURL: runtimeURL,
+            architecture: .win64
+        )
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "spiderman-2",
+            installationURL: root,
+            executableURL: executableURL
+        )
+
+        let outcome = try await GameLaunchService().launchWindows(
+            game: game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        let output = outcome.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertTrue(output.contains("-nolauncher"))
+        XCTAssertTrue(output.contains("-noStreamline"))
+        // Check that isolation was cleanly restored after process execution finished
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stubURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gptkDir.appendingPathComponent("nvngx.dll.isolated").path))
+    }
+
+    func testBottleRegistryModernDriverVersionSync() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusDriverVersionHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let systemRegURL = root.appendingPathComponent("system.reg")
+        let initialSystemReg = """
+        WINE REGISTRY Version 2
+        [System\\\\CurrentControlSet\\\\Control\\\\Class\\\\{4D36E968-E325-11CE-BFC1-08002BE10318}\\\\0000] 1793382166
+        "DriverDate"="10-30-2020"
+        "DriverDesc"="Old Compatibility Mode"
+        "DriverVersion"="30.0.15.1233"
+
+        [System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\\\00000000] 1793382166
+        "Class"="Display"
+        "HardwareID"=str(7):"PCI\\\\VEN_106B&DEV_03F1\\0"
+        """
+        try initialSystemReg.write(to: systemRegURL, atomically: true, encoding: .utf8)
+
+        _ = try WineBottleService.syncBottleRegistry(prefixURL: root, retina: false)
+
+        let updated = try String(contentsOf: systemRegURL, encoding: .utf8)
+        XCTAssertTrue(updated.contains("\"DriverVersion\"=\"32.0.12011.1036\""))
+        XCTAssertFalse(updated.contains("\"DriverVersion\"=\"30.0.15.1233\""))
+        let expectedGPU = "AMD Radeon RX 7900 XTX"
+        XCTAssertTrue(updated.contains("\"DriverDesc\"=\"\(expectedGPU)\""))
+        XCTAssertTrue(updated.contains("\"HardwareInformation.MemorySize\"=dword:ffffffff"))
+        XCTAssertTrue(updated.contains("Keyboard Layouts\\\\00000409"))
+        XCTAssertTrue(updated.contains("VEN_1002&DEV_66AF"))
+        XCTAssertTrue(updated.contains("VEN_106B&DEV_03F1"))
+        XCTAssertTrue(updated.contains("Control\\\\Video\\\\"))
+        XCTAssertTrue(updated.contains("MatchingDeviceId"))
+        XCTAssertTrue(updated.contains("[System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\\\00000000\\\\Properties\\\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\\\0008]"))
+        XCTAssertTrue(updated.contains("[System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\\\00000000\\\\Properties\\\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\\\0003]"))
+        XCTAssertTrue(updated.contains("[System\\\\CurrentControlSet\\\\Enum\\\\PCI\\\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\\\00000000\\\\Properties\\\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\\\0008]"))
+        XCTAssertTrue(updated.contains("DeviceClasses\\\\{5B45201D-F2F2-4F3B-85BB-30FF1F953599}"))
+    }
+
+    func testModalPreflightEvaluatorRejectsNonWineAppsAndMatchesWineDialogs() {
+        // 1. Non-Wine app windows with matching keywords must NEVER be treated as preflight dialogs
+        let chromeEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "Google Chrome",
+            windowName: "AMD Radeon Graphics Driver Download - Chrome",
+            bounds: (x: 50, y: 50, width: 800, height: 400),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertFalse(chromeEval.isDialog)
+        XCTAssertFalse(chromeEval.isGameWindow)
+
+        let terminalEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "Terminal",
+            windowName: "Error: build failed - warning: unresolved symbol",
+            bounds: (x: 10, y: 10, width: 700, height: 350),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertFalse(terminalEval.isDialog)
+        XCTAssertFalse(terminalEval.isGameWindow)
+
+        let safariEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "Safari",
+            windowName: "SpiderMan2Fix / Releases",
+            bounds: (x: 0, y: 0, width: 850, height: 480),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertFalse(safariEval.isDialog)
+        XCTAssertFalse(safariEval.isGameWindow)
+
+        // 2. Wine / CrossOver dialogs with driver warnings or alerts must be matched as dialogs
+        let wineDriverEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "wine64-preloader",
+            windowName: "Old Driver detected",
+            bounds: (x: 200, y: 200, width: 420, height: 220),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertTrue(wineDriverEval.isDialog)
+        XCTAssertFalse(wineDriverEval.isGameWindow)
+
+        let crossOverNoGPUEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "CrossOver",
+            windowName: "No installed graphics card detected",
+            bounds: (x: 150, y: 150, width: 450, height: 200),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertTrue(crossOverNoGPUEval.isDialog)
+        XCTAssertFalse(crossOverNoGPUEval.isGameWindow)
+
+        let wineEmptyTitleDialogEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "wine",
+            windowName: "",
+            bounds: (x: 100, y: 100, width: 350, height: 160),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertTrue(wineEmptyTitleDialogEval.isDialog)
+        XCTAssertFalse(wineEmptyTitleDialogEval.isGameWindow)
+
+        // 3. Full-resolution game windows must be recognized as game windows, not dialogs
+        let gameWindowEval = GameLaunchService.evaluateWindowForModalPreflight(
+            ownerName: "Spider-Man2.exe",
+            windowName: "Marvel's Spider-Man 2",
+            bounds: (x: 0, y: 0, width: 1440, height: 810),
+            targetProcessName: "Spider-Man2.exe"
+        )
+        XCTAssertFalse(gameWindowEval.isDialog)
+        XCTAssertTrue(gameWindowEval.isGameWindow)
+    }
+
+    func testDLSSRestorationPreservesRealStubWhenEmptyFileExists() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusDLSSZeroByteHarness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let gptkDir = tempRoot.appendingPathComponent("lib64/apple_gptk/wine/x86_64-windows", isDirectory: true)
+        try FileManager.default.createDirectory(at: gptkDir, withIntermediateDirectories: true)
+
+        let gptkDLL = gptkDir.appendingPathComponent("nvngx.dll")
+        let isolatedDLL = gptkDir.appendingPathComponent("nvngx.dll.isolated")
+        let realContent = "real original stub data"
+        try Data(realContent.utf8).write(to: isolatedDLL)
+
+        // Simulate an empty placeholder file having been created at the original path
+        try Data().write(to: gptkDLL)
+        XCTAssertEqual((try? FileManager.default.attributesOfItem(atPath: gptkDLL.path)[.size] as? UInt64), 0)
+
+        let isolation = CrossOverDLSSIsolation(isolatedPaths: [(original: gptkDLL, isolated: isolatedDLL)])
+        let restored = isolation.restore()
+
+        XCTAssertTrue(restored.contains(gptkDLL))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: isolatedDLL.path))
+        let restoredString = try String(contentsOf: gptkDLL, encoding: .utf8)
+        XCTAssertEqual(restoredString, realContent)
+
+        // Also verify .bak restoration
+        let bakDLL = gptkDir.appendingPathComponent("nvngx.dll.bak")
+        try FileManager.default.moveItem(at: gptkDLL, to: bakDLL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bakDLL.path))
+
+        let globalRestored = GameOptimizationService.restoreAllIsolatedDLSSStubs(cxRootURL: tempRoot)
+        XCTAssertTrue(globalRestored.contains(gptkDLL))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gptkDLL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bakDLL.path))
+    }
+
+    // MARK: - Spider-Man 2 & MacGameFix Tests
+
+    func testSpiderMan2Detection() {
+        XCTAssertTrue(GameOptimizationService.isSpiderMan2(title: "Marvel's Spider-Man 2", executableURL: nil))
+        XCTAssertTrue(GameOptimizationService.isSpiderMan2(title: "Spider-Man 2", executableURL: nil))
+        XCTAssertTrue(GameOptimizationService.isSpiderMan2(title: "Unknown", executableURL: URL(fileURLWithPath: "/Games/Spider-Man2.exe")))
+        XCTAssertTrue(GameOptimizationService.isSpiderMan2(title: "Custom", executableURL: URL(fileURLWithPath: "/Games/Spider-Man 2.exe")))
+        XCTAssertFalse(GameOptimizationService.isSpiderMan2(title: "Marvel's Spider-Man Remastered", executableURL: URL(fileURLWithPath: "/Games/Spider-Man.exe")))
+        XCTAssertFalse(GameOptimizationService.isSpiderMan2(title: "Cyberpunk 2077", executableURL: URL(fileURLWithPath: "/Games/Cyberpunk2077.exe")))
+    }
+
+    func testSpiderMan2LegacyD3D12Neutralization() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2LegacyD3D12-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let d3d12URL = tempRoot.appendingPathComponent("d3d12.dll")
+        try Data("mock legacy macprotips d3d12 shim".utf8).write(to: d3d12URL)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d3d12URL.path))
+        let neutralized = GameOptimizationService.neutralizeLegacyD3D12InSpiderMan2(at: tempRoot)
+        XCTAssertTrue(neutralized)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d3d12URL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("d3d12.dll.bak").path))
+
+        // Neutralizing again when already absent should return false
+        XCTAssertFalse(GameOptimizationService.neutralizeLegacyD3D12InSpiderMan2(at: tempRoot))
+    }
+
+    private func createMockSpiderMan2Executable(at url: URL, timestamp: UInt32 = 0x679b8cd0, sizeOfImage: UInt32 = 0x0ce54000) throws {
+        var data = Data(count: 256)
+        data[0] = 0x4D // M
+        data[1] = 0x5A // Z
+        let peOffset: UInt32 = 0x80
+        withUnsafeBytes(of: peOffset.littleEndian) { data.replaceSubrange(0x3c..<0x40, with: $0) }
+        data[Int(peOffset)] = 0x50 // P
+        data[Int(peOffset) + 1] = 0x45 // E
+        data[Int(peOffset) + 2] = 0x00
+        data[Int(peOffset) + 3] = 0x00
+        withUnsafeBytes(of: timestamp.littleEndian) { data.replaceSubrange((Int(peOffset) + 8)..<(Int(peOffset) + 12), with: $0) }
+        withUnsafeBytes(of: sizeOfImage.littleEndian) { data.replaceSubrange((Int(peOffset) + 80)..<(Int(peOffset) + 84), with: $0) }
+        try data.write(to: url)
+    }
+
+    func testSpiderMan2FixStatusVerification() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2StatusVerification-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        // 1. Not Spider-Man 2 (no Spider-Man2.exe)
+        XCTAssertEqual(GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot), .notSpiderMan2)
+
+        // 2. Spider-Man 2 executable present (valid PE), but amd_ags_x64.dll missing -> missing
+        let exeURL = tempRoot.appendingPathComponent("Spider-Man2.exe")
+        try createMockSpiderMan2Executable(at: exeURL)
+        XCTAssertEqual(GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot), .missing)
+
+        // 3. Stock amd_ags_x64.dll (no marker) and no real DLL -> missing
+        let agsURL = tempRoot.appendingPathComponent("amd_ags_x64.dll")
+        try Data("untouched original ags dll".utf8).write(to: agsURL)
+        XCTAssertEqual(GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot), .missing)
+
+        // 4. Proxy amd_ags_x64.dll with marker, but amd_ags_x64_real.dll missing -> broken
+        try Data("proxy header sm2-tpose-fix.log trailing data".utf8).write(to: agsURL)
+        if case .broken(let reason) = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot) {
+            XCTAssertTrue(reason.contains("amd_ags_x64_real.dll"))
+        } else {
+            XCTFail("Expected broken status when real DLL is missing")
+        }
+
+        // 5. Real DLL present, but sm2fix.ini missing -> broken
+        let realAgsURL = tempRoot.appendingPathComponent("amd_ags_x64_real.dll")
+        try Data("real ags dll".utf8).write(to: realAgsURL)
+        if case .broken(let reason) = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot) {
+            XCTAssertTrue(reason.contains("sm2fix.ini"))
+        } else {
+            XCTFail("Expected broken status when sm2fix.ini is missing")
+        }
+
+        // 6. sm2fix.ini present, but shaders missing -> broken
+        let iniURL = tempRoot.appendingPathComponent("sm2fix.ini")
+        let iniContent = """
+        # Spider-Man 2 T-Pose Fix
+        game_build = 679b8cd0-0ce54000
+        shaders = 125a4957ab64d24d 14902794dd7134e4 3d50acdb571dce22 9538ca33c087a84c
+        mgvf_fog_barrier = 1
+        """
+        try iniContent.write(to: iniURL, atomically: true, encoding: .utf8)
+        if case .broken(let reason) = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot) {
+            XCTAssertTrue(reason.contains("Missing shader dxil"))
+        } else {
+            XCTFail("Expected broken status when shaders are missing")
+        }
+
+        // 7. All 4 shaders present with DXBC header (>= 32 bytes) -> installed
+        let shaders = ["125a4957ab64d24d", "14902794dd7134e4", "3d50acdb571dce22", "9538ca33c087a84c"]
+        for shader in shaders {
+            let shaderURL = tempRoot.appendingPathComponent("sm2fix-pool-\(shader).dxil")
+            var dxbcData = Data("DXBC".utf8)
+            dxbcData.append(Data(repeating: 0, count: 64))
+            try dxbcData.write(to: shaderURL)
+        }
+
+        let status = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot)
+        XCTAssertEqual(status, .installed(build: "679b8cd0-0ce54000", fogBarrier: true))
+    }
+
+    func testSpiderMan2OptimizationIntegration() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2OptimizationIntegration-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let exeURL = tempRoot.appendingPathComponent("Spider-Man2.exe")
+        try createMockSpiderMan2Executable(at: exeURL)
+
+        // Mock conflicting legacy d3d12.dll
+        let d3d12URL = tempRoot.appendingPathComponent("d3d12.dll")
+        try Data("mock d3d12".utf8).write(to: d3d12URL)
+
+        // Mock problematic libraries
+        let dstorageURL = tempRoot.appendingPathComponent("dstorage.dll")
+        let interposerURL = tempRoot.appendingPathComponent("sl.interposer.dll")
+        try Data("dstorage".utf8).write(to: dstorageURL)
+        try Data("interposer".utf8).write(to: interposerURL)
+
+        // Set up valid MacGameFix installation
+        let agsURL = tempRoot.appendingPathComponent("amd_ags_x64.dll")
+        try Data("proxy header sm2-tpose-fix.log trailing".utf8).write(to: agsURL)
+        let realAgsURL = tempRoot.appendingPathComponent("amd_ags_x64_real.dll")
+        try Data("real ags".utf8).write(to: realAgsURL)
+        let iniURL = tempRoot.appendingPathComponent("sm2fix.ini")
+        let iniContent = "game_build = 679b8cd0-0ce54000\nshaders = 125a4957ab64d24d\nmgvf_fog_barrier = 1\n"
+        try iniContent.write(to: iniURL, atomically: true, encoding: .utf8)
+        let shaderURL = tempRoot.appendingPathComponent("sm2fix-pool-125a4957ab64d24d.dxil")
+        var dxbcData = Data("DXBC".utf8)
+        dxbcData.append(Data(repeating: 0, count: 64))
+        try dxbcData.write(to: shaderURL)
+
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "sm2",
+            installationURL: tempRoot,
+            executableURL: exeURL,
+            graphicsBackend: "d3dmetal"
+        )
+
+        let prefixURL = tempRoot.appendingPathComponent("Prefix")
+        try FileManager.default.createDirectory(at: prefixURL, withIntermediateDirectories: true)
+
+        let report = GameOptimizationService().optimize(game: game, prefixURL: prefixURL)
+
+        // 1. DirectStorage and Streamline neutralized
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("dstorage.dll.bak").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("sl.interposer.dll.bak").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dstorageURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: interposerURL.path))
+
+        // 2. Legacy d3d12.dll neutralized
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("d3d12.dll.bak").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d3d12URL.path))
+
+        // 3. MacGameFix verified in report details
+        XCTAssertTrue(report.details.contains { $0.contains("Neutralized legacy d3d12.dll in favor of MacGameFix proxy") })
+        XCTAssertTrue(report.details.contains { $0.contains("Verified MacGameFix active for Spider-Man 2") })
+        XCTAssertNotNil(report.summary)
+        XCTAssertTrue(report.summary!.contains("MacGameFix"))
+    }
+
+    func testSpiderMan2RegistryInputSync() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2RegistryInput-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let userRegURL = tempRoot.appendingPathComponent("user.reg")
+        let initialUserReg = """
+        WINE REGISTRY Version 2
+        [Software\\\\Wine\\\\Mac Driver] 1793052511
+        "RetinaMode"="N"
+        """
+        try initialUserReg.write(to: userRegURL, atomically: true, encoding: .utf8)
+
+        _ = try WineBottleService.syncBottleRegistry(prefixURL: tempRoot, retina: false)
+
+        let updated = try String(contentsOf: userRegURL, encoding: .utf8)
+        XCTAssertTrue(updated.contains("[Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2\\\\Input]"))
+        XCTAssertTrue(updated.contains("\"EnableLibScePad\"=dword:00000001"))
+        XCTAssertTrue(updated.contains("\"EnableWindowsGamingInput\"=dword:00000001"))
+        XCTAssertTrue(updated.contains("\"ShowLauncher\"=dword:00000000"))
+        XCTAssertTrue(updated.contains("\"FirstRun\"=dword:00000000"))
+    }
+
+    func testSpiderMan2PEParserValidatesSignatures() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2PEParser-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let testFile = tempRoot.appendingPathComponent("test.exe")
+
+        // 1. Non-PE / zero filled
+        try Data(repeating: 0, count: 512).write(to: testFile)
+        XCTAssertNil(GameOptimizationService.readSpiderMan2GameBuild(from: testFile))
+
+        // 2. Only "MZ" without valid PE header
+        var badMZ = Data(repeating: 0, count: 512)
+        badMZ[0] = 0x4D
+        badMZ[1] = 0x5A
+        try badMZ.write(to: testFile)
+        XCTAssertNil(GameOptimizationService.readSpiderMan2GameBuild(from: testFile))
+
+        // 3. Genuine PE format
+        try createMockSpiderMan2Executable(at: testFile, timestamp: 0x679b8cd0, sizeOfImage: 0x0ce54000)
+        XCTAssertEqual(GameOptimizationService.readSpiderMan2GameBuild(from: testFile), "679b8cd0-0ce54000")
+    }
+
+    func testSpiderMan2FixStatusRejectsCorruptedShaderAndBuildMismatch() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2RejectsTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let exeURL = tempRoot.appendingPathComponent("Spider-Man2.exe")
+        try createMockSpiderMan2Executable(at: exeURL, timestamp: 0x11112222, sizeOfImage: 0x33334444)
+
+        let agsURL = tempRoot.appendingPathComponent("amd_ags_x64.dll")
+        try Data("header sm2-tpose-fix.log trailing".utf8).write(to: agsURL)
+        let realAgsURL = tempRoot.appendingPathComponent("amd_ags_x64_real.dll")
+        try Data("real ags".utf8).write(to: realAgsURL)
+
+        // 1. Build mismatch
+        let iniURL = tempRoot.appendingPathComponent("sm2fix.ini")
+        let mismatchIni = "game_build = 99999999-88888888\nshaders = 125a4957ab64d24d\n"
+        try mismatchIni.write(to: iniURL, atomically: true, encoding: .utf8)
+
+        var status = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot)
+        if case .broken(let reason) = status {
+            XCTAssertTrue(reason.contains("Game build mismatch"))
+        } else {
+            XCTFail("Expected broken status for build mismatch, got \(status)")
+        }
+
+        // 2. Matching build, but corrupt shader (0 bytes)
+        let matchingIni = "game_build = 11112222-33334444\nshaders = 125a4957ab64d24d\n"
+        try matchingIni.write(to: iniURL, atomically: true, encoding: .utf8)
+        let shaderURL = tempRoot.appendingPathComponent("sm2fix-pool-125a4957ab64d24d.dxil")
+        try Data().write(to: shaderURL)
+
+        status = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot)
+        if case .broken(let reason) = status {
+            XCTAssertTrue(reason.contains("Damaged or incomplete shader dxil"))
+        } else {
+            XCTFail("Expected broken status for empty shader, got \(status)")
+        }
+
+        // 3. Shader with invalid magic
+        try Data(repeating: 0x41, count: 64).write(to: shaderURL)
+        status = GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot)
+        if case .broken(let reason) = status {
+            XCTAssertTrue(reason.contains("Damaged shader dxil"))
+        } else {
+            XCTFail("Expected broken status for non-DXBC shader, got \(status)")
+        }
+    }
+
+    func testSpiderMan2Restore() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2RestoreTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let exeURL = tempRoot.appendingPathComponent("Spider-Man2.exe")
+        try createMockSpiderMan2Executable(at: exeURL)
+
+        let liveProxy = tempRoot.appendingPathComponent("amd_ags_x64.dll")
+        try Data("proxy marker sm2-tpose-fix.log".utf8).write(to: liveProxy)
+        let realAgs = tempRoot.appendingPathComponent("amd_ags_x64_real.dll")
+        try Data("real original ags content".utf8).write(to: realAgs)
+
+        let d3d12Bak = tempRoot.appendingPathComponent("d3d12.dll.bak")
+        try Data("original d3d12".utf8).write(to: d3d12Bak)
+
+        let iniURL = tempRoot.appendingPathComponent("sm2fix.ini")
+        try "game_build = 679b8cd0-0ce54000\nshaders = 125a4957ab64d24d\n".write(to: iniURL, atomically: true, encoding: .utf8)
+        let shaderURL = tempRoot.appendingPathComponent("sm2fix-pool-125a4957ab64d24d.dxil")
+        try Data(repeating: 0x20, count: 64).write(to: shaderURL)
+
+        let (restored, details) = GameOptimizationService.restoreSpiderMan2Fix(at: tempRoot)
+        XCTAssertTrue(restored)
+        XCTAssertTrue(details.contains { $0.contains("Restored original amd_ags_x64.dll") })
+        XCTAssertTrue(details.contains { $0.contains("Restored d3d12.dll from backup") })
+
+        // Check restored filesystem state
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveProxy.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: realAgs.path))
+        let liveContent = try String(contentsOf: liveProxy, encoding: .utf8)
+        XCTAssertEqual(liveContent, "real original ags content")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("d3d12.dll").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d3d12Bak.path))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: iniURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shaderURL.path))
+
+        // Fix status should now be .missing
+        XCTAssertEqual(GameOptimizationService.checkSpiderMan2FixStatus(at: tempRoot), .missing)
+    }
+
+    func testSpiderMan2OptimizationWithNilInstallationURL() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2NilInstallURLTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let exeURL = tempRoot.appendingPathComponent("Spider-Man2.exe")
+        try createMockSpiderMan2Executable(at: exeURL)
+
+        // Place legacy d3d12
+        let d3d12URL = tempRoot.appendingPathComponent("d3d12.dll")
+        try Data("mock d3d12".utf8).write(to: d3d12URL)
+
+        // Set up valid MacGameFix installation
+        let agsURL = tempRoot.appendingPathComponent("amd_ags_x64.dll")
+        try Data("proxy header sm2-tpose-fix.log trailing".utf8).write(to: agsURL)
+        let realAgsURL = tempRoot.appendingPathComponent("amd_ags_x64_real.dll")
+        try Data("real ags".utf8).write(to: realAgsURL)
+        let iniURL = tempRoot.appendingPathComponent("sm2fix.ini")
+        try "game_build = 679b8cd0-0ce54000\nshaders = 125a4957ab64d24d\nmgvf_fog_barrier = 1\n"
+            .write(to: iniURL, atomically: true, encoding: .utf8)
+        let shaderURL = tempRoot.appendingPathComponent("sm2fix-pool-125a4957ab64d24d.dxil")
+        var dxbcData = Data("DXBC".utf8)
+        dxbcData.append(Data(repeating: 0, count: 64))
+        try dxbcData.write(to: shaderURL)
+
+        // Game with installationURL == nil
+        let game = Game(
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            storeApplicationID: "sm2",
+            installationURL: nil,
+            executableURL: exeURL,
+            graphicsBackend: "d3dmetal"
+        )
+
+        let prefixURL = tempRoot.appendingPathComponent("Prefix")
+        try FileManager.default.createDirectory(at: prefixURL, withIntermediateDirectories: true)
+
+        let report = GameOptimizationService().optimize(game: game, prefixURL: prefixURL)
+
+        // Legacy d3d12 should still be neutralized
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("d3d12.dll.bak").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d3d12URL.path))
+        XCTAssertTrue(report.details.contains { $0.contains("Verified MacGameFix active for Spider-Man 2") })
+    }
+
+    func testSpiderMan2TargetGameInstallationIntegrity() throws {
+        let gameURL = URL(fileURLWithPath: "/Volumes/sata ssd 1/Applications/Marvel's Spider-Man 2")
+        guard FileManager.default.fileExists(atPath: gameURL.appendingPathComponent("Spider-Man2.exe").path) else {
+            return
+        }
+
+        // Verify PE Build parsing on real executable
+        let build = GameOptimizationService.readSpiderMan2GameBuild(from: gameURL.appendingPathComponent("Spider-Man2.exe"))
+        XCTAssertEqual(build, "679b8cd0-0ce54000")
+
+        // Verify MacGameFix status on real installation
+        let status = GameOptimizationService.checkSpiderMan2FixStatus(at: gameURL)
+        XCTAssertEqual(status, .installed(build: "679b8cd0-0ce54000", fogBarrier: true))
+
+        // Verify conflicting legacy d3d12.dll is neutralized
+        XCTAssertFalse(FileManager.default.fileExists(atPath: gameURL.appendingPathComponent("d3d12.dll").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: gameURL.appendingPathComponent("d3d12.dll.bak").path))
+
+        // Verify real log exists from test launch if present
+        let logURL = gameURL.appendingPathComponent("sm2-tpose-fix.log")
+        if FileManager.default.fileExists(atPath: logURL.path) {
+            let logContent = try String(contentsOf: logURL, encoding: .utf8)
+            XCTAssertTrue(logContent.contains("Spider-Man 2 T-Pose Fix 1.3 (MGVF, on amd_ags_x64.dll)"))
+            XCTAssertTrue(logContent.contains("Game build 679b8cd0-0ce54000 matches. Applying the fix (4 shaders), with the fog barrier."))
+            XCTAssertTrue(logContent.contains("The vtable at"))
+            XCTAssertTrue(logContent.contains("its objects call through a copy"))
+        }
+    }
+
+    func testAtiadlxxDriverVersionPatching() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusAtiadlxxTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sys32 = root.appendingPathComponent("drive_c/windows/system32")
+        let sys64 = root.appendingPathComponent("drive_c/windows/syswow64")
+        try FileManager.default.createDirectory(at: sys32, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sys64, withIntermediateDirectories: true)
+
+        let dll32 = sys32.appendingPathComponent("atiadlxx.dll")
+        let dll64 = sys64.appendingPathComponent("atiadlxx.dll")
+        let dummyLegacy = Data("HEADER_DATA_22.10.1\0_FOOTER_DATA".utf8)
+        try dummyLegacy.write(to: dll32)
+        try dummyLegacy.write(to: dll64)
+
+        let patched = GameOptimizationService.patchAtiadlxxDriverVersion(in: root)
+        XCTAssertTrue(patched)
+
+        let content32 = try String(contentsOf: dll32, encoding: .isoLatin1)
+        let content64 = try String(contentsOf: dll64, encoding: .isoLatin1)
+        XCTAssertTrue(content32.contains("25.10.1\0"))
+        XCTAssertFalse(content32.contains("22.10.1\0"))
+        XCTAssertTrue(content64.contains("25.10.1\0"))
+        XCTAssertFalse(content64.contains("22.10.1\0"))
+
+        // Idempotent: second call returns false and doesn't modify
+        let secondPatch = GameOptimizationService.patchAtiadlxxDriverVersion(in: root)
+        XCTAssertFalse(secondPatch)
+
+        // Also test upgrading from 24.12.1
+        let dummy24 = Data("HEADER_DATA_24.12.1\0_FOOTER_DATA".utf8)
+        try dummy24.write(to: dll32)
+        let upgradePatch = GameOptimizationService.patchAtiadlxxDriverVersion(in: root)
+        XCTAssertTrue(upgradePatch)
+        let upgraded32 = try String(contentsOf: dll32, encoding: .isoLatin1)
+        XCTAssertTrue(upgraded32.contains("25.10.1\0"))
+        XCTAssertFalse(upgraded32.contains("24.12.1\0"))
+    }
+
+    #if canImport(AppKit)
+    static func analyzeRenderedFrame(imagePath: String, threshold: Double = 0.05) -> (isNonBlack: Bool, nonBlackFraction: Double) {
+        guard let img = NSImage(contentsOfFile: imagePath),
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else {
+            return (false, 0.0)
+        }
+        let w = rep.pixelsWide
+        let h = rep.pixelsHigh
+        guard w > 100, h > 100 else { return (false, 0.0) }
+
+        let insetX = w / 10
+        let insetY = h / 10
+        var nonBlackCount = 0
+        var totalSampled = 0
+        let step = max(1, min(w, h) / 100)
+
+        for y in stride(from: insetY, to: h - insetY, by: step) {
+            for x in stride(from: insetX, to: w - insetX, by: step) {
+                totalSampled += 1
+                if let color = rep.colorAt(x: x, y: y) {
+                    if color.redComponent > 0.08 || color.greenComponent > 0.08 || color.blueComponent > 0.08 {
+                        nonBlackCount += 1
+                    }
+                }
+            }
+        }
+        guard totalSampled > 0 else { return (false, 0.0) }
+        let fraction = Double(nonBlackCount) / Double(totalSampled)
+        return (fraction >= threshold, fraction)
+    }
+    #endif
+
+    func runSpiderMan2LiveExecution(durationSeconds: Double = 120.0) async throws {
+        let gameURL = URL(fileURLWithPath: "/Volumes/sata ssd 1/Applications/Marvel's Spider-Man 2")
+        let exeURL = gameURL.appendingPathComponent("Spider-Man2.exe")
+        guard FileManager.default.fileExists(atPath: exeURL.path) else {
+            print("[LiveSM2] Spider-Man2.exe not found at \(exeURL.path)")
+            return
+        }
+
+        let build = GameOptimizationService.readSpiderMan2GameBuild(from: exeURL)
+        print("[LiveSM2] Real PE Build: \(build ?? "unknown")")
+
+        let fixStatus = GameOptimizationService.checkSpiderMan2FixStatus(at: gameURL)
+        print("[LiveSM2] MacGameFix Status: \(fixStatus)")
+
+        let runtimeURL = URL(fileURLWithPath: "/Volumes/sata ssd 1/downloads/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine")
+        let runtime = DetectedRuntime(
+            id: UUID(uuidString: "CBE5187A-9948-57BC-8928-CF6A89A0F64F")!,
+            name: "CrossOver Wine (sata ssd 1 Downloads)",
+            executableURL: runtimeURL,
+            version: "Product Name: CrossOver\nPublic Version: 26.3.0",
+            architecture: "x86_64",
+            status: "Detected"
+        )
+        let prefixURL = URL(fileURLWithPath: "/Users/godjoel/Library/Application Support/Overcross/Prefixes/DefaultBottle")
+        let prefix = WinePrefix(
+            id: UUID(uuidString: "B7460E52-F3FC-43B7-9F0D-BF8E348F9FB3")!,
+            name: "DefaultBottle",
+            url: prefixURL,
+            runtimeURL: runtimeURL,
+            architecture: .win64,
+            createdAt: Date(),
+            status: "Verified Shared Gaming Bottle"
+        )
+
+        let game = Game(
+            id: UUID(uuidString: "EBFC559E-5782-408A-8D25-3CB9BB0655C1")!,
+            title: "Marvel's Spider-Man 2",
+            store: .local,
+            platform: .windows,
+            storeApplicationID: nil,
+            installationURL: gameURL,
+            executableURL: exeURL,
+            graphicsBackend: "d3dmetal",
+            runtimeIdentifier: "CBE5187A-9948-57BC-8928-CF6A89A0F64F",
+            prefixID: UUID(uuidString: "B7460E52-F3FC-43B7-9F0D-BF8E348F9FB3")!,
+            metalHUDEnabled: true,
+            msyncEnabled: true
+        )
+
+        print("[LiveSM2] Starting game launch via GameLaunchService...")
+        let launchTask = Task {
+            do {
+                let outcome = try await GameLaunchService().launchWindows(
+                    game: game,
+                    runtime: runtime,
+                    prefix: prefix
+                )
+                print("[LiveSM2] Launch completed. Exit: \(outcome.exitStatus), Summary: \(outcome.summary)")
+            } catch {
+                print("[LiveSM2] Launch ended: \(error.localizedDescription)")
+            }
+        }
+
+        let startTime = Date()
+        var observedGameWindow = false
+        var observedSwapchain = false
+        var observedNonBlackRender = false
+        var capturedScreenshots: [String] = []
+        var sm2PID: pid_t?
+
+        while Date().timeIntervalSince(startTime) < durationSeconds {
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            let elapsed = Int(Date().timeIntervalSince(startTime))
+
+            // 1. Check PID via pgrep
+            if sm2PID == nil {
+                let pipe = Pipe()
+                let pgrep = Process()
+                pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+                pgrep.arguments = ["-f", "Spider-Man2.exe"]
+                pgrep.standardOutput = pipe
+                try? pgrep.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                pgrep.waitUntilExit()
+                let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                for line in output.components(separatedBy: "\n") {
+                    if let pid = pid_t(line.trimmingCharacters(in: .whitespaces)) {
+                        sm2PID = pid
+                        print("[LiveSM2] Found Spider-Man2.exe PID: \(pid)")
+                        fflush(stdout)
+                        break
+                    }
+                }
+            }
+
+            // 2. Check window list
+            #if canImport(CoreGraphics)
+            if let windowInfoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] {
+                for window in windowInfoList {
+                    let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
+                    let windowName = window[kCGWindowName as String] as? String ?? ""
+                    let windowID = window[kCGWindowNumber as String] as? CGWindowID ?? 0
+                    let ownerPid = window[kCGWindowOwnerPID as String] as? pid_t
+
+                    if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                       let h = boundsDict["Height"] as? Double,
+                       let w = boundsDict["Width"] as? Double {
+                        let eval = GameLaunchService.evaluateWindowForModalPreflight(
+                            ownerName: ownerName,
+                            windowName: windowName,
+                            bounds: (x: 0, y: 0, width: w, height: h),
+                            targetProcessName: "spider-man2"
+                        )
+                        let lowerOwner = ownerName.lowercased()
+                        let isWineOrGame = (ownerPid != nil && sm2PID != nil && ownerPid == sm2PID) ||
+                                           lowerOwner.contains("spider-man2") ||
+                                           lowerOwner.contains("wine64-preloader") ||
+                                           (lowerOwner.contains("wine") && !lowerOwner.contains("antigravity"))
+                        let notHostApp = !lowerOwner.contains("antigravity") && !lowerOwner.contains("code")
+
+                        if eval.isGameWindow && isWineOrGame && notHostApp {
+                            observedGameWindow = true
+
+                            #if canImport(AppKit)
+                            if let pid = ownerPid ?? sm2PID, let app = NSRunningApplication(processIdentifier: pid) {
+                                app.activate(options: .activateIgnoringOtherApps)
+                            }
+                            #endif
+
+                            if elapsed % 4 == 0 {
+                                print("[LiveSM2] [\(elapsed)s] Active Game Window: ID=\(windowID), Title='\(windowName)', Size=\(Int(w))x\(Int(h)), Owner='\(ownerName)' (PID \(ownerPid ?? 0))")
+                                fflush(stdout)
+                                let shotPath = "/tmp/sm2_render_\(elapsed)s.png"
+                                let shotProc = Process()
+                                shotProc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                                shotProc.arguments = ["-x", "-l\(windowID)", shotPath]
+                                try? shotProc.run()
+                                shotProc.waitUntilExit()
+                                if FileManager.default.fileExists(atPath: shotPath),
+                                   let attrs = try? FileManager.default.attributesOfItem(atPath: shotPath),
+                                   let size = attrs[.size] as? UInt64, size > 1000 {
+                                    capturedScreenshots.append(shotPath)
+                                    #if canImport(AppKit)
+                                    let analysis = Self.analyzeRenderedFrame(imagePath: shotPath)
+                                    if analysis.isNonBlack {
+                                        observedNonBlackRender = true
+                                    }
+                                    print("[LiveSM2] Captured rendered frame: \(shotPath) (\(size) bytes) - NonBlack: \(analysis.isNonBlack) (\(String(format: "%.1f%%", analysis.nonBlackFraction * 100)))")
+                                    #else
+                                    print("[LiveSM2] Captured rendered frame: \(shotPath) (\(size) bytes)")
+                                    #endif
+                                    fflush(stdout)
+                                }
+
+                                if elapsed == 20, let pid = ownerPid ?? sm2PID {
+                                    print("[LiveSM2] Taking thread sample of PID \(pid)...")
+                                    fflush(stdout)
+                                    let sampleProc = Process()
+                                    sampleProc.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+                                    sampleProc.arguments = ["\(pid)", "2", "-file", "/tmp/sm2_sample.txt"]
+                                    try? sampleProc.run()
+                                }
+                            }
+
+                            // Advance past splash screens & title menu by synthesizing Enter/Space/KeypadEnter/E directly to game PID
+                            if elapsed >= 10, let pid = ownerPid ?? sm2PID {
+                                for keyCode: CGKeyCode in [36, 49, 76, 14] {
+                                    if let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+                                       let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                                        down.postToPid(pid)
+                                        usleep(15_000)
+                                        up.postToPid(pid)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            #endif
+
+            // 3. Inspect game log
+            let gameLogURL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Documents/Marvel's Spider-Man 2/Marvel's Spider-Man 2.log")
+            if FileManager.default.fileExists(atPath: gameLogURL.path),
+               let logText = try? String(contentsOf: gameLogURL, encoding: .utf8) {
+                if logText.contains("Swapchain native backbuffer") {
+                    observedSwapchain = true
+                }
+            }
+
+            if elapsed % 6 == 0 {
+                let fixLogURL = gameURL.appendingPathComponent("sm2-tpose-fix.log")
+                let fixLogSnippet = (try? String(contentsOf: fixLogURL, encoding: .utf8))?
+                    .components(separatedBy: "\n").filter { !$0.isEmpty }.last ?? "no fix log"
+                print("[LiveSM2] [\(elapsed)s] WindowActive: \(observedGameWindow), Swapchain: \(observedSwapchain), NonBlack: \(observedNonBlackRender), FixLog: \(fixLogSnippet)")
+                fflush(stdout)
+            }
+
+            if observedGameWindow && observedSwapchain && observedNonBlackRender && capturedScreenshots.count >= 3 && elapsed >= 45 {
+                print("[LiveSM2] Successfully verified 3D window rendering frames beyond loading screen over \(elapsed)s!")
+                break
+            }
+        }
+
+        print("[LiveSM2] Terminating test launch cleanly...")
+        launchTask.cancel()
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
+
+        XCTAssertTrue(observedGameWindow, "Expected game render window to be created and active")
+        XCTAssertTrue(observedSwapchain, "Expected game to initialize swapchain and resolution")
+        XCTAssertFalse(capturedScreenshots.isEmpty, "Expected at least one rendered frame screenshot to be captured")
+        XCTAssertTrue(observedNonBlackRender, "Expected 3D window to render actual non-black graphics frames beyond loading screen")
+    }
+
+    func testSpiderMan2BypassDriverWarning() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusSM2BypassTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let dummyExeURL = tempDir.appendingPathComponent("Spider-Man2.exe")
+        // Create a buffer of at least 0x317c500 bytes with original call and branch bytes
+        let totalSize = 0x317c500
+        var dummyData = Data(count: totalSize)
+
+        // Set original call bytes at 0x317c356: FF 15 AC E4 11 02
+        let callOffset = 0x317c356
+        let originalCall: [UInt8] = [0xff, 0x15, 0xac, 0xe4, 0x11, 0x02]
+        dummyData.replaceSubrange(callOffset..<(callOffset + originalCall.count), with: originalCall)
+
+        // Set original branch bytes at 0x317c460: 75 14
+        let branchOffset = 0x317c460
+        let originalBranch: [UInt8] = [0x75, 0x14]
+        dummyData.replaceSubrange(branchOffset..<(branchOffset + originalBranch.count), with: originalBranch)
+
+        try dummyData.write(to: dummyExeURL)
+
+        // 1. First run: applies patch
+        let patched = GameOptimizationService.bypassSpiderMan2DriverWarning(at: tempDir)
+        XCTAssertTrue(patched, "Expected bypassSpiderMan2DriverWarning to apply patch")
+
+        // Verify patched bytes in file
+        let readBack = try Data(contentsOf: dummyExeURL)
+        let patchedCall = Array(readBack[callOffset..<(callOffset + 6)])
+        let expectedCall: [UInt8] = [0xb8, 0x01, 0x00, 0x00, 0x00, 0x90]
+        XCTAssertEqual(patchedCall, expectedCall, "Expected mov eax, 1; nop at call offset")
+
+        let patchedBranch = Array(readBack[branchOffset..<(branchOffset + 2)])
+        let expectedBranch: [UInt8] = [0xeb, 0x14]
+        XCTAssertEqual(patchedBranch, expectedBranch, "Expected jmp 0x14 at branch offset")
+
+        // 2. Second run: idempotency check (already patched returns true)
+        let alreadyPatched = GameOptimizationService.bypassSpiderMan2DriverWarning(at: tempDir)
+        XCTAssertTrue(alreadyPatched, "Expected bypassSpiderMan2DriverWarning to be idempotent")
+    }
+
+    // MARK: - Proton & steamac Innovation Integration Tests
+
+    func testTitleOptimizationRegistryRules() {
+        // 1. Dragon's Dogma 2
+        let dd2Rule = TitleOptimizationRegistry.rule(forAppID: "2054970")
+        XCTAssertNotNil(dd2Rule)
+        XCTAssertEqual(dd2Rule?.titleName, "Dragon's Dogma 2")
+        XCTAssertEqual(dd2Rule?.vkd3dFeatureLevel, "12_1")
+        XCTAssertEqual(dd2Rule?.vkd3dShaderModel, "6_6")
+        XCTAssertEqual(dd2Rule?.recommendedBackend, .d3dmetal)
+
+        // 2. Death's Door (Unity D3D11 -> DXMT)
+        let ddRule = TitleOptimizationRegistry.rule(forAppID: "894020")
+        XCTAssertNotNil(ddRule)
+        XCTAssertEqual(ddRule?.recommendedBackend, .dxmt)
+        XCTAssertEqual(ddRule?.dxvkAsync, true)
+
+        // 3. Executable matching without appID
+        let sm2Rule = TitleOptimizationRegistry.rule(forAppID: nil, executablePath: "/Volumes/Games/Spider-Man 2/Spider-Man2.exe")
+        XCTAssertNotNil(sm2Rule)
+        XCTAssertEqual(sm2Rule?.recommendedBackend, .d3dmetal)
+        XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-nolauncher") == true)
+        XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-nostreamline") == true)
+
+        // 4. Non-matching appID returns nil
+        let nonMatch = TitleOptimizationRegistry.rule(forAppID: "99999999", executablePath: "unknown_game.exe")
+        XCTAssertNil(nonMatch)
+    }
+
+    func testTitleOptimizationCompatibilityProfileSelection() {
+        let game = Game(
+            id: UUID(),
+            title: "Dragon's Dogma 2",
+            store: .steam,
+            platform: .windows,
+            storeApplicationID: "2054970",
+            ownershipEvidence: .steamLocalManifest,
+            compatibilityStatus: .notTested,
+            isFavorite: false,
+            isHidden: false,
+            categories: [],
+            createdAt: Date(),
+            customLaunchArguments: [],
+            customEnvironment: [:]
+        )
+
+        let service = CompatibilityProfileSelectionService()
+        let profile = service.verifiedProfile(for: game, profiles: [])
+        XCTAssertNotNil(profile, "Expected CompatibilityProfileSelectionService to synthesize profile from TitleOptimizationRegistry")
+        XCTAssertEqual(profile?.graphicsBackend, .d3dmetal)
+        XCTAssertEqual(profile?.environment["VKD3D_FEATURE_LEVEL"], "12_1")
+        XCTAssertEqual(profile?.environment["VKD3D_SHADER_MODEL"], "6_6")
+        XCTAssertTrue(profile?.isVerified == true)
+    }
+
+    func testSteamworksBridgeService() {
+        let env = SteamworksBridgeService.steamworksEnvironment(for: "1245620")
+        XCTAssertEqual(env["SteamAppId"], "1245620")
+        XCTAssertEqual(env["SteamGameId"], "1245620")
+        XCTAssertEqual(env["STEAM_COMPAT_APP_ID"], "1245620")
+
+        let overrides = SteamworksBridgeService.steamworksDllOverrides
+        XCTAssertTrue(overrides.contains("steam_api"))
+        XCTAssertTrue(overrides.contains("steam_api64"))
+    }
+
+    func testHIDPassthroughServiceAndControllerTuning() throws {
+        XCTAssertTrue(HIDPassthroughService.isDualSense(vendorID: 0x054c, productID: 0x0ce6))
+        XCTAssertTrue(HIDPassthroughService.isDualSense(vendorID: 0x054c, productID: 0x0df2))
+        XCTAssertFalse(HIDPassthroughService.isDualSense(vendorID: 0x045e, productID: 0x028e))
+        XCTAssertTrue(HIDPassthroughService.isPlayStationController(vendorID: 0x054c, productID: 0x09cc))
+
+        let tempPrefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusControllerTuningTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempPrefix, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempPrefix) }
+
+        _ = try WineBottleService.syncBottleRegistry(prefixURL: tempPrefix, retina: false)
+        XCTAssertTrue(WineBottleService.isControllerTuningEnabled(in: tempPrefix), "Expected controller DirectInput/XInput tuning to be written to user.reg")
+    }
+
+    func testGameProcessManagerFreezeAndThaw() {
+        let manager = GameProcessManager.shared
+        manager.clearAll()
+
+        let dummyProcess = Process()
+        dummyProcess.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        dummyProcess.arguments = ["10"]
+        try? dummyProcess.run()
+        let pid = dummyProcess.processIdentifier
+        defer {
+            dummyProcess.terminate()
+            dummyProcess.waitUntilExit()
+            manager.unregister(pid: pid)
+        }
+
+        manager.register(process: dummyProcess, gameTitle: "Test Game")
+        XCTAssertTrue(manager.activeGamePIDs().contains(pid))
+        XCTAssertFalse(manager.isFrozen(pid: pid))
+
+        // Freeze
+        let frozen = manager.freezeProcess(pid: pid)
+        XCTAssertTrue(frozen, "Expected freezeProcess to succeed for active process")
+        XCTAssertTrue(manager.isFrozen(pid: pid))
+
+        // Thaw
+        let thawed = manager.thawProcess(pid: pid)
+        XCTAssertTrue(thawed, "Expected thawProcess to succeed for frozen process")
+        XCTAssertFalse(manager.isFrozen(pid: pid))
+
+        manager.unregister(pid: pid)
+        XCTAssertFalse(manager.activeGamePIDs().contains(pid))
+    }
+
+    func testWindowsLaunchInjectsProtonAndSteamacOptimizations() async throws {
+        let tempPrefix = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusProtonOptimizationsLaunchTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempPrefix, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempPrefix.appendingPathComponent("drive_c"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempPrefix) }
+
+        try """
+        [System]
+        "Installed"=dword:00000001
+        """.write(to: tempPrefix.appendingPathComponent("system.reg"), atomically: true, encoding: .utf8)
+
+        let runtimeScript = tempPrefix.appendingPathComponent("mock_wine.sh")
+        try """
+        #!/bin/sh
+        echo "OVERCROSS_GRAPHICS_BACKEND=$OVERCROSS_GRAPHICS_BACKEND"
+        echo "VKD3D_FEATURE_LEVEL=$VKD3D_FEATURE_LEVEL"
+        echo "SteamAppId=$SteamAppId"
+        echo "GST_PLUGIN_SYSTEM_PATH=$GST_PLUGIN_SYSTEM_PATH"
+        exit 0
+        """.write(to: runtimeScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeScript.path)
+
+        let dummyGameExe = tempPrefix.appendingPathComponent("game.exe")
+        try "dummy".write(to: dummyGameExe, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dummyGameExe.path)
+
+        let runtime = DetectedRuntime(
+            id: UUID(),
+            name: "Wine-CX Test",
+            executableURL: runtimeScript,
+            winebootURL: nil,
+            version: "23.7.1",
+            architecture: "arm64",
+            status: "ready"
+        )
+
+        let prefix = WinePrefix(
+            name: "default",
+            url: tempPrefix,
+            runtimeURL: runtimeScript,
+            architecture: .win64
+        )
+
+        // 1. Dragon's Dogma 2 (AppID: 2054970) -> Should inject VKD3D_FEATURE_LEVEL=12_1 and SteamAppId
+        let dd2Game = Game(
+            id: UUID(),
+            title: "Dragon's Dogma 2",
+            store: .steam,
+            platform: .windows,
+            storeApplicationID: "2054970",
+            ownershipEvidence: .steamLocalManifest,
+            executableURL: dummyGameExe,
+            graphicsBackend: "automatic",
+            compatibilityStatus: .notTested,
+            isFavorite: false,
+            isHidden: false,
+            categories: [],
+            createdAt: Date(),
+            customLaunchArguments: [],
+            customEnvironment: [:]
+        )
+
+        let launchService = GameLaunchService()
+        let outcome = try await launchService.launchWindows(
+            game: dd2Game,
+            runtime: runtime,
+            prefix: prefix
+        )
+
+        XCTAssertTrue(outcome.standardOutput.contains("VKD3D_FEATURE_LEVEL=12_1"), "Expected launchWindows to inject VKD3D_FEATURE_LEVEL=12_1 for Dragon's Dogma 2")
+        XCTAssertTrue(outcome.standardOutput.contains("OVERCROSS_GRAPHICS_BACKEND=d3dmetal"), "Expected launchWindows to select d3dmetal for Dragon's Dogma 2")
+        XCTAssertTrue(outcome.standardOutput.contains("SteamAppId=2054970"), "Expected launchWindows to inject SteamAppId for Steam title")
+
+        // 2. Death's Door (AppID: 894020) -> Should select DXMT
+        let ddGame = Game(
+            id: UUID(),
+            title: "Death's Door",
+            store: .steam,
+            platform: .windows,
+            storeApplicationID: "894020",
+            ownershipEvidence: .steamLocalManifest,
+            executableURL: dummyGameExe,
+            graphicsBackend: "automatic",
+            compatibilityStatus: .notTested,
+            isFavorite: false,
+            isHidden: false,
+            categories: [],
+            createdAt: Date(),
+            customLaunchArguments: [],
+            customEnvironment: [:]
+        )
+
+        let ddOutcome = try await launchService.launchWindows(
+            game: ddGame,
+            runtime: runtime,
+            prefix: prefix
+        )
+        XCTAssertTrue(ddOutcome.standardOutput.contains("OVERCROSS_GRAPHICS_BACKEND=dxmt"), "Expected launchWindows to select dxmt for Death's Door")
+    }
 }
+
 

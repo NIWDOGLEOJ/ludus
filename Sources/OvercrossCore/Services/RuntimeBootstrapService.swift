@@ -73,6 +73,9 @@ struct RuntimeBootstrapService: Sendable {
     func ensureRuntime(
         progress: (@Sendable (BootstrapPhase) -> Void)? = nil
     ) async throws -> DetectedRuntime {
+        // Automatically restore any abandoned DLSS stub from previously interrupted sessions
+        GameOptimizationService.restoreAllIsolatedDLSSStubs()
+
         progress?(.checking)
 
         // 1. Check if the managed runtime directory already has wine & wineboot

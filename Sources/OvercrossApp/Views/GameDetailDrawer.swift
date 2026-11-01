@@ -442,7 +442,7 @@ struct GameDetailDrawer: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Starting game in Wine...")
+                    Text(game.title.contains("Spider-Man") ? "Loading game assets... (~30s on external drive)" : "Starting game in Wine...")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

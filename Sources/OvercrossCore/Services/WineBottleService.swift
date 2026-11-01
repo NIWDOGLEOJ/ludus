@@ -2,6 +2,9 @@ import Foundation
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(Metal)
+import Metal
+#endif
 
 struct RedistributableRepairSummary: Sendable, Equatable {
     let installedDirectXCount: Int
@@ -588,6 +591,7 @@ struct WineBottleService: Sendable {
         }
 
         var lines = content.components(separatedBy: "\n")
+        _ = GameOptimizationService.patchAtiadlxxDriverVersion(in: prefixURL)
 
         // 1. [Software\Wine\Mac Driver] - Native Spaces FullScreen, Mouse Capture & Confine, Pointer Grab, Retina
         lines = mergeRegistrySection(
@@ -604,11 +608,21 @@ struct WineBottleService: Sendable {
             into: lines
         )
 
-        // 2. [Software\Wine\DirectInput] - Force Cursor Center-Warp to prevent Mac Hotkeys/Hot Corners escape
+        // 2. [Software\Wine\DirectInput] - Force Cursor Center-Warp to prevent Mac Hotkeys/Hot Corners escape & zero deadzone
         lines = mergeRegistrySection(
             named: "Software\\\\Wine\\\\DirectInput",
             settings: [
-                "\"MouseWarpOverride\"": "\"force\""
+                "\"MouseWarpOverride\"": "\"force\"",
+                "\"DefaultDeadZone\"": "\"0\""
+            ],
+            into: lines
+        )
+
+        // 2b. [Software\Wine\XInput] - Enable native XInput controller bridge (DualSense & Xbox)
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\XInput",
+            settings: [
+                "\"EnableXInput\"": "\"y\""
             ],
             into: lines
         )
@@ -637,48 +651,319 @@ struct WineBottleService: Sendable {
             into: lines
         )
 
-        // 5. [Software\Insomniac Games\Marvel's Spider-Man 2] - Skip pre-game launcher popup and tune graphics
-        lines = mergeRegistrySection(
-            named: "Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2",
-            settings: [
-                "\"ShowLauncher\"": "dword:00000000",
-                "\"FirstRun\"": "dword:00000000"
-            ],
-            into: lines
-        )
+        // 5. [Software\Insomniac Games] - Skip pre-game launcher popup and tune graphics
+        let insomniacTitles = [
+            "Marvel's Spider-Man 2",
+            "Marvel's Spider-Man Remastered",
+            "Marvel's Spider-Man Miles Morales"
+        ]
+        for smTitle in insomniacTitles {
+            lines = mergeRegistrySection(
+                named: "Software\\\\Insomniac Games\\\\\(smTitle)",
+                settings: [
+                    "\"ShowLauncher\"": "dword:00000000",
+                    "\"FirstRun\"": "dword:00000000"
+                ],
+                into: lines
+            )
 
-        lines = mergeRegistrySection(
-            named: "Software\\\\Insomniac Games\\\\Marvel's Spider-Man 2\\\\Graphics",
-            settings: [
-                "\"Fullscreen\"": "dword:00000000",
-                "\"ExclusiveFullscreen\"": "dword:00000000",
-                "\"UpscaleMethod\"": "dword:00000003",
-                "\"UpscaleQuality\"": "dword:00000003",
-                "\"DynamicResolutionTargetFPS\"": "dword:00000000",
-                "\"AsyncCompute\"": "dword:00000000",
-                "\"FrameGen\"": "dword:00000000",
-                "\"ReflexMode\"": "dword:00000000",
-                "\"AntilagMode\"": "dword:00000000",
-                "\"RayReconstruction\"": "dword:00000000",
-                "\"RTReflections\"": "dword:00000000",
-                "\"RTShadows\"": "dword:00000000",
-                "\"RTAmbientOcclusion\"": "dword:00000000",
-                "\"RTInteriors\"": "dword:00000000"
-            ],
-            into: lines
-        )
+            lines = mergeRegistrySection(
+                named: "Software\\\\Insomniac Games\\\\\(smTitle)\\\\Graphics",
+                settings: [
+                    "\"Fullscreen\"": "dword:00000000",
+                    "\"ExclusiveFullscreen\"": "dword:00000000",
+                    "\"AA\"": "dword:00000001",
+                    "\"UpscaleMethod\"": "dword:00000001",
+                    "\"UpscaleQuality\"": "dword:00000002",
+                    "\"DynamicResolutionTargetFPS\"": "dword:00000000",
+                    "\"AsyncCompute\"": "dword:00000000",
+                    "\"FrameGen\"": "dword:00000000",
+                    "\"ReflexMode\"": "dword:00000000",
+                    "\"AntilagMode\"": "dword:00000000",
+                    "\"RayReconstruction\"": "dword:00000000",
+                    "\"RTReflections\"": "dword:00000000",
+                    "\"RTShadows\"": "dword:00000000",
+                    "\"RTAmbientOcclusion\"": "dword:00000000",
+                    "\"RTInteriors\"": "dword:00000000"
+                ],
+                into: lines
+            )
 
-        // 6. [Software\Wine\AppDefaults\Spider-Man2.exe\DllOverrides] - Local D3D12 shim for T-pose and symbiote fix
-        lines = mergeRegistrySection(
-            named: "Software\\\\Wine\\\\AppDefaults\\\\Spider-Man2.exe\\\\DllOverrides",
-            settings: [
-                "\"d3d12\"": "\"native,builtin\""
-            ],
-            into: lines
-        )
+            lines = mergeRegistrySection(
+                named: "Software\\\\Insomniac Games\\\\\(smTitle)\\\\Input",
+                settings: [
+                    "\"ShowLauncher\"": "dword:00000000",
+                    "\"FirstRun\"": "dword:00000000",
+                    "\"EnableLibScePad\"": "dword:00000001",
+                    "\"EnableWindowsGamingInput\"": "dword:00000001",
+                    "\"EnableMouseSmoothing\"": "dword:00000001"
+                ],
+                into: lines
+            )
+        }
+
+        // 6. [Software\Wine\AppDefaults] - Local D3D12 shim for T-pose and symbiote fix, and disable nvngx
+        let nixxesExecutables = ["Spider-Man2.exe", "Spider-Man.exe", "MilesMorales.exe"]
+        for nixxesExe in nixxesExecutables {
+            lines = mergeRegistrySection(
+                named: "Software\\\\Wine\\\\AppDefaults\\\\\(nixxesExe)\\\\DllOverrides",
+                settings: [
+                    "\"d3d12\"": "\"native,builtin\"",
+                    "\"nvngx\"": "\"\""
+                ],
+                into: lines
+            )
+        }
 
         let updatedContent = lines.joined(separator: "\n")
         try updatedContent.write(to: userRegURL, atomically: true, encoding: .utf8)
+
+        // 7. [System\CurrentControlSet\Control\Class\{4D36E968-E325-11CE-BFC1-08002BE10318}\0000] - Modern GPU driver info to prevent Nixxes Old Driver and No GPU preflight dialogs
+        let systemRegURL = prefixURL.appendingPathComponent("system.reg")
+        if FileManager.default.fileExists(atPath: systemRegURL.path),
+           let sysContent = try? String(contentsOf: systemRegURL, encoding: .utf8) {
+            var sysLines = sysContent.components(separatedBy: "\n")
+            #if canImport(Metal)
+            let rawGPU = MTLCreateSystemDefaultDevice()?.name ?? "Apple Silicon"
+            #else
+            let rawGPU = "Apple Silicon"
+            #endif
+            // Ensure Nixxes, Sony, and Unreal Engine GPU driver queries recognize a high-performance dedicated
+            // AMD GPU identifier matching DXGI Adapter 0 (1002:66af AMD Compatibility Mode) rather than raw
+            // host string which triggers "No installed graphics card has been detected on this PC" dialogs.
+            let detectedGPU = "AMD Radeon RX 7900 XTX"
+
+            // Extract existing VideoID GUID if present
+            var discoveredVideoID: String?
+            for line in sysLines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.contains("\"VideoID\"") && trimmed.contains("{") && trimmed.contains("}") {
+                    if let start = trimmed.range(of: "{"), let end = trimmed.range(of: "}") {
+                        discoveredVideoID = String(trimmed[start.lowerBound...end.lowerBound])
+                        break
+                    }
+                }
+            }
+            let activeVideoID = discoveredVideoID ?? "{94220624-0090-49b5-bdb2-a8ff99253cea}"
+
+            // 7a. [System\CurrentControlSet\Control\Class\{4D36E968-E325-11CE-BFC1-08002BE10318}\0000] - Modern GPU driver info to prevent Nixxes Old Driver and No GPU preflight dialogs
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Control\\Class\\{4D36E968-E325-11CE-BFC1-08002BE10318}\\0000",
+                settings: [
+                    "\"DriverVersion\"": "\"32.0.12011.1036\"",
+                    "\"DriverDate\"": "\"03-15-2025\"",
+                    "\"DriverDesc\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.AdapterString\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.ChipType\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.MemorySize\"": "dword:ffffffff",
+                    "\"ProviderName\"": "\"Advanced Micro Devices, Inc.\"",
+                    "\"MatchingDeviceId\"": "\"PCI\\\\VEN_1002&DEV_66AF\""
+                ],
+                into: sysLines
+            )
+
+            // 7b. [System\CurrentControlSet\Enum\PCI\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\00000000] - Match DXGI compatibility adapter 0 (AMD Radeon VII 1002:66af) in SetupDi device enumeration
+            let pciHardwareID = "str(7):\"PCI\\\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\0PCI\\\\VEN_1002&DEV_66AF\\0PCI\\\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\0PCI\\\\VEN_106B&DEV_03F1\\0\""
+            let pciHardwareProp0008 = utf16HexMultiString([
+                "PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00",
+                "PCI\\VEN_1002&DEV_66AF",
+                "PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00",
+                "PCI\\VEN_106B&DEV_03F1"
+            ])
+            let pciDriverVersionProp0003 = utf16HexString("32.0.12011.1036")
+            let pciDriverDescProp0004 = utf16HexString(detectedGPU)
+            let pciDriverTarget = "\"{4D36E968-E325-11CE-BFC1-08002BE10318}\\\\0000\""
+
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\00000000",
+                settings: [
+                    "\"Class\"": "\"Display\"",
+                    "\"ClassGUID\"": "\"{4D36E968-E325-11CE-BFC1-08002BE10318}\"",
+                    "\"DeviceDesc\"": "\"\(detectedGPU) (AMD Compatibility Mode)\"",
+                    "\"Driver\"": pciDriverTarget,
+                    "\"HardwareID\"": pciHardwareID,
+                    "\"Service\"": "\"amdwddmg\""
+                ],
+                into: sysLines
+            )
+
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\00000000\\Device Parameters",
+                settings: [
+                    "\"VideoID\"": "\"\(activeVideoID)\""
+                ],
+                into: sysLines
+            )
+
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0008",
+                settings: ["@": pciHardwareProp0008],
+                into: sysLines
+            )
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0003",
+                settings: ["@": pciDriverVersionProp0003],
+                into: sysLines
+            )
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0004",
+                settings: ["@": pciDriverDescProp0004],
+                into: sysLines
+            )
+
+            // Also update any Wine-generated host display device (such as VEN_106B&DEV_03F1 on Apple Silicon)
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\00000000",
+                settings: [
+                    "\"Class\"": "\"Display\"",
+                    "\"ClassGUID\"": "\"{4D36E968-E325-11CE-BFC1-08002BE10318}\"",
+                    "\"DeviceDesc\"": "\"\(detectedGPU)\"",
+                    "\"Driver\"": pciDriverTarget,
+                    "\"HardwareID\"": pciHardwareID,
+                    "\"Service\"": "\"amdwddmg\""
+                ],
+                into: sysLines
+            )
+
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\00000000\\Device Parameters",
+                settings: [
+                    "\"VideoID\"": "\"\(activeVideoID)\""
+                ],
+                into: sysLines
+            )
+
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0008",
+                settings: ["@": pciHardwareProp0008],
+                into: sysLines
+            )
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0003",
+                settings: ["@": pciDriverVersionProp0003],
+                into: sysLines
+            )
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Enum\\PCI\\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\\00000000\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0004",
+                settings: ["@": pciDriverDescProp0004],
+                into: sysLines
+            )
+
+            // Dynamically discover and update all PCI display devices present in system.reg
+            var pciDisplaySections: [String] = []
+            var currentSecName: String?
+            var currentSecIsDisplay = false
+            for line in sysLines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("[") && trimmed.contains("]") {
+                    if let sec = currentSecName, currentSecIsDisplay {
+                        pciDisplaySections.append(sec)
+                    }
+                    let norm = normalizeRegistrySectionName(trimmed)
+                    if norm.hasPrefix("system\\currentcontrolset\\enum\\pci\\") && !norm.hasSuffix("\\device parameters") && !norm.contains("\\properties\\") {
+                        let parts = norm.split(separator: "\\")
+                        if parts.count >= 6 {
+                            currentSecName = canonicalRegistrySectionName(trimmed)
+                            currentSecIsDisplay = norm.contains("03f1") || norm.contains("66af")
+                        } else {
+                            currentSecName = nil
+                            currentSecIsDisplay = false
+                        }
+                    } else {
+                        currentSecName = nil
+                        currentSecIsDisplay = false
+                    }
+                } else if currentSecName != nil {
+                    let compact = trimmed.replacingOccurrences(of: " ", with: "").lowercased()
+                    if compact.contains("\"class\"=\"display\"") {
+                        currentSecIsDisplay = true
+                    }
+                }
+            }
+            if let sec = currentSecName, currentSecIsDisplay {
+                pciDisplaySections.append(sec)
+            }
+            for sec in pciDisplaySections {
+                sysLines = mergeRegistrySection(
+                    named: sec,
+                    settings: [
+                        "\"Driver\"": pciDriverTarget,
+                        "\"HardwareID\"": pciHardwareID
+                    ],
+                    into: sysLines
+                )
+                sysLines = mergeRegistrySection(
+                    named: "\(sec)\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0008",
+                    settings: ["@": pciHardwareProp0008],
+                    into: sysLines
+                )
+                sysLines = mergeRegistrySection(
+                    named: "\(sec)\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0003",
+                    settings: ["@": pciDriverVersionProp0003],
+                    into: sysLines
+                )
+                sysLines = mergeRegistrySection(
+                    named: "\(sec)\\Properties\\{A8B865DD-2E3D-4094-AD97-E593A70C75D6}\\0004",
+                    settings: ["@": pciDriverDescProp0004],
+                    into: sysLines
+                )
+            }
+
+            // 7c. Register Display Adapter device interface classes
+            let displayClasses = [
+                "{5B45201D-F2F2-4F3B-85BB-30FF1F953599}", // GUID_DEVINTERFACE_DISPLAY_ADAPTER
+                "{1CA05180-A699-450A-9A0C-DE4FBE3DDD89}"  // GUID_DISPLAY_DEVICE_ARRIVAL
+            ]
+            let pciDevices = [
+                "PCI#VEN_1002&DEV_66AF&SUBSYS_00000000&REV_00#00000000",
+                "PCI#VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00#00000000"
+            ]
+            for clsid in displayClasses {
+                for dev in pciDevices {
+                    let instance = dev.replacingOccurrences(of: "#", with: "\\\\")
+                    sysLines = mergeRegistrySection(
+                        named: "System\\CurrentControlSet\\Control\\DeviceClasses\\\(clsid)\\##?#\(dev)#\(clsid)",
+                        settings: [
+                            "\"DeviceInstance\"": "\"\(instance)\""
+                        ],
+                        into: sysLines
+                    )
+                }
+            }
+
+            // 7d. [System\CurrentControlSet\Control\Video\{VideoID}\0000] - Mirror display driver registry keys for VideoID lookup
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Control\\Video\\\(activeVideoID)\\0000",
+                settings: [
+                    "\"DriverVersion\"": "\"32.0.12011.1036\"",
+                    "\"DriverDate\"": "\"03-15-2025\"",
+                    "\"DriverDesc\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.AdapterString\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.ChipType\"": "\"\(detectedGPU)\"",
+                    "\"HardwareInformation.MemorySize\"": "dword:ffffffff",
+                    "\"ProviderName\"": "\"Advanced Micro Devices, Inc.\"",
+                    "\"MatchingDeviceId\"": "\"PCI\\\\VEN_1002&DEV_66AF\""
+                ],
+                into: sysLines
+            )
+
+            // 8. [System\CurrentControlSet\Control\Keyboard Layouts\00000409] - Prevent Keyboard Layout missing error
+            sysLines = mergeRegistrySection(
+                named: "System\\CurrentControlSet\\Control\\Keyboard Layouts\\00000409",
+                settings: [
+                    "\"Layout File\"": "\"KBDUS.DLL\"",
+                    "\"Layout Id\"": "\"0000\"",
+                    "\"Layout Text\"": "\"US\""
+                ],
+                into: sysLines
+            )
+
+            let updatedSys = sysLines.joined(separator: "\n")
+            if updatedSys != sysContent {
+                try? updatedSys.write(to: systemRegURL, atomically: true, encoding: .utf8)
+            }
+        }
+
         return updatedContent
     }
 
@@ -718,22 +1003,80 @@ struct WineBottleService: Sendable {
         return content.contains("\"MouseWarpOverride\"=\"force\"")
     }
 
+    /// Checks if controller DirectInput/XInput tuning is configured in the prefix registry.
+    static func isControllerTuningEnabled(in prefixURL: URL) -> Bool {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard let content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return false }
+        return content.contains("\"DefaultDeadZone\"=\"0\"") && content.contains("\"EnableXInput\"=\"y\"")
+    }
+
+    static func utf16HexMultiString(_ strings: [String]) -> String {
+        var bytes: [UInt8] = []
+        for s in strings {
+            for char in s.utf16 {
+                bytes.append(UInt8(char & 0xFF))
+                bytes.append(UInt8((char >> 8) & 0xFF))
+            }
+            bytes.append(0)
+            bytes.append(0)
+        }
+        bytes.append(0)
+        bytes.append(0)
+        return "hex(ffff0012):" + bytes.map { String(format: "%02x", $0) }.joined(separator: ",")
+    }
+
+    static func utf16HexString(_ s: String) -> String {
+        var bytes: [UInt8] = []
+        for char in s.utf16 {
+            bytes.append(UInt8(char & 0xFF))
+            bytes.append(UInt8((char >> 8) & 0xFF))
+        }
+        bytes.append(0)
+        bytes.append(0)
+        return "hex(ffff0012):" + bytes.map { String(format: "%02x", $0) }.joined(separator: ",")
+    }
+
+    static func canonicalRegistrySectionName(_ name: String) -> String {
+        var clean = name.trimmingCharacters(in: .whitespaces)
+        if clean.hasPrefix("[") {
+            clean = String(clean.dropFirst())
+            if let closeBracket = clean.firstIndex(of: "]") {
+                clean = String(clean[..<closeBracket])
+            }
+        } else if let closeBracket = clean.firstIndex(of: "]"), clean.hasSuffix("]") {
+            clean = String(clean[..<closeBracket])
+        }
+        clean = clean.trimmingCharacters(in: .whitespaces)
+        while clean.contains("\\\\") {
+            clean = clean.replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        return clean
+    }
+
+    static func normalizeRegistrySectionName(_ name: String) -> String {
+        return canonicalRegistrySectionName(name).lowercased()
+    }
+
     static func mergeRegistrySection(
         named sectionName: String,
         settings: [String: String],
         into existingLines: [String]
     ) -> [String] {
         var lines = existingLines
-        let targetPrefix = "[\(sectionName)"
+        let targetNorm = normalizeRegistrySectionName(sectionName)
+        let isPropertiesSection = targetNorm.contains("\\properties\\")
 
         var sectionHeaderIndex: Int?
         var sectionEndIndex: Int?
 
         for i in 0..<lines.count {
             let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix(targetPrefix) && trimmed.contains("]") {
-                sectionHeaderIndex = i
-                continue
+            if trimmed.hasPrefix("[") && trimmed.contains("]") {
+                let norm = normalizeRegistrySectionName(trimmed)
+                if norm == targetNorm {
+                    sectionHeaderIndex = i
+                    continue
+                }
             }
             if sectionHeaderIndex != nil {
                 if trimmed.hasPrefix("[") && trimmed.contains("]") {
@@ -756,7 +1099,8 @@ struct WineBottleService: Sendable {
             sectionLines.append(lines[headerIdx])
 
             var lastCommentOrHeaderIndex = 0
-            for i in (headerIdx + 1)..<endIdx {
+            var i = headerIdx + 1
+            while i < endIdx {
                 let line = lines[i]
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
 
@@ -765,22 +1109,57 @@ struct WineBottleService: Sendable {
                     if trimmed.hasPrefix("#") || trimmed.hasPrefix(";") {
                         lastCommentOrHeaderIndex = sectionLines.count - 1
                     }
+                    i += 1
                     continue
                 }
 
                 if let eqIndex = trimmed.firstIndex(of: "=") {
                     let key = String(trimmed[..<eqIndex]).trimmingCharacters(in: .whitespaces)
                     let lowerKey = key.lowercased()
+                    if !isPropertiesSection && lowerKey == "@" && lookup["@"] == nil {
+                        // Strip accidental default value on non-properties section
+                        var hadContinuation = trimmed.hasSuffix("\\")
+                        i += 1
+                        while i < endIdx {
+                            let nextTrimmed = lines[i].trimmingCharacters(in: .whitespaces)
+                            if nextTrimmed.hasPrefix("[") || nextTrimmed.contains("=") {
+                                break
+                            }
+                            if hadContinuation || lines[i].hasPrefix(" ") || lines[i].hasPrefix("\t") {
+                                hadContinuation = nextTrimmed.hasSuffix("\\")
+                                i += 1
+                            } else {
+                                break
+                            }
+                        }
+                        continue
+                    }
                     if let (origKey, val) = lookup[lowerKey] {
                         sectionLines.append("\(origKey)=\(val)")
                         remainingSettings.removeValue(forKey: origKey)
                         lookup.removeValue(forKey: lowerKey)
+                        var hadContinuation = trimmed.hasSuffix("\\")
+                        i += 1
+                        while i < endIdx {
+                            let nextTrimmed = lines[i].trimmingCharacters(in: .whitespaces)
+                            if nextTrimmed.hasPrefix("[") || nextTrimmed.contains("=") {
+                                break
+                            }
+                            if hadContinuation || lines[i].hasPrefix(" ") || lines[i].hasPrefix("\t") {
+                                hadContinuation = nextTrimmed.hasSuffix("\\")
+                                i += 1
+                            } else {
+                                break
+                            }
+                        }
+                        continue
                     } else {
                         sectionLines.append(line)
                     }
                 } else {
                     sectionLines.append(line)
                 }
+                i += 1
             }
 
             let sortedNewKeys = remainingSettings.keys.sorted()
@@ -797,7 +1176,9 @@ struct WineBottleService: Sendable {
             if !lines.isEmpty && !lines.last!.trimmingCharacters(in: .whitespaces).isEmpty {
                 lines.append("")
             }
-            lines.append("[\(sectionName)]")
+            let canonicalName = canonicalRegistrySectionName(sectionName)
+            let escapedHeader = canonicalName.replacingOccurrences(of: "\\", with: "\\\\")
+            lines.append("[\(escapedHeader)]")
             for k in settings.keys.sorted() {
                 if let val = settings[k] {
                     lines.append("\(k)=\(val)")

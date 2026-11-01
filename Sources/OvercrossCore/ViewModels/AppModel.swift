@@ -283,6 +283,7 @@ final class AppModel: ObservableObject {
         steamAuthenticationMessage = nil
         settings = AppSettings.load()
         lastDiagnosticPayload = anonymousDiagnosticsService.loadLastReport()
+        GameOptimizationService.restoreAllIsolatedDLSSStubs()
         let savedRuntimes = runtimeStore.load()
         runtimeReport = RuntimeDiagnosticReport(
             generatedAt: .distantPast,
@@ -2258,6 +2259,14 @@ final class AppModel: ObservableObject {
                 }
                 if let epicAppID {
                     additionalArguments = await self.epicService.getLaunchArguments(for: epicAppID)
+                }
+
+                // Transition launch UI from "Starting..." to "Game is Running" once Wine process starts
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    if self?.runningGameIDs.contains(gameID) == true {
+                        self?.isLaunchingGame = false
+                    }
                 }
 
                 let outcome = try await launchService.launchWindows(

@@ -14,6 +14,9 @@ struct AppSettings: Codable, Equatable {
     var esyncEnabled = false
     var retinaScalingEnabled = false
     var defaultGraphicsBackend: GraphicsBackend = .automatic
+    var backgroundFreezeEnabled = true
+    var steamworksBridgeEnabled = true
+    var dualsensePassthroughEnabled = true
 
     // Anonymous Diagnostics & Feedback
     var diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined
@@ -35,6 +38,9 @@ struct AppSettings: Codable, Equatable {
         esyncEnabled: Bool = false,
         retinaScalingEnabled: Bool = false,
         defaultGraphicsBackend: GraphicsBackend = .automatic,
+        backgroundFreezeEnabled: Bool = true,
+        steamworksBridgeEnabled: Bool = true,
+        dualsensePassthroughEnabled: Bool = true,
         diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined,
         anonymousDiagnosticsEnabled: Bool = false,
         anonymousInstallationID: String = UUID().uuidString,
@@ -51,6 +57,9 @@ struct AppSettings: Codable, Equatable {
         self.esyncEnabled = esyncEnabled
         self.retinaScalingEnabled = retinaScalingEnabled
         self.defaultGraphicsBackend = defaultGraphicsBackend
+        self.backgroundFreezeEnabled = backgroundFreezeEnabled
+        self.steamworksBridgeEnabled = steamworksBridgeEnabled
+        self.dualsensePassthroughEnabled = dualsensePassthroughEnabled
         self.diagnosticsConsentStatus = diagnosticsConsentStatus
         self.anonymousDiagnosticsEnabled = anonymousDiagnosticsEnabled
         self.anonymousInstallationID = anonymousInstallationID.isEmpty ? UUID().uuidString : anonymousInstallationID
@@ -69,6 +78,9 @@ struct AppSettings: Codable, Equatable {
         case esyncEnabled
         case retinaScalingEnabled
         case defaultGraphicsBackend
+        case backgroundFreezeEnabled
+        case steamworksBridgeEnabled
+        case dualsensePassthroughEnabled
         case diagnosticsConsentStatus
         case anonymousDiagnosticsEnabled
         case anonymousInstallationID
@@ -88,6 +100,9 @@ struct AppSettings: Codable, Equatable {
         esyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? false
         retinaScalingEnabled = try container.decodeIfPresent(Bool.self, forKey: .retinaScalingEnabled) ?? false
         defaultGraphicsBackend = try container.decodeIfPresent(GraphicsBackend.self, forKey: .defaultGraphicsBackend) ?? .automatic
+        backgroundFreezeEnabled = try container.decodeIfPresent(Bool.self, forKey: .backgroundFreezeEnabled) ?? true
+        steamworksBridgeEnabled = try container.decodeIfPresent(Bool.self, forKey: .steamworksBridgeEnabled) ?? true
+        dualsensePassthroughEnabled = try container.decodeIfPresent(Bool.self, forKey: .dualsensePassthroughEnabled) ?? true
         diagnosticsConsentStatus = try container.decodeIfPresent(DiagnosticsConsentStatus.self, forKey: .diagnosticsConsentStatus) ?? .undetermined
         anonymousDiagnosticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .anonymousDiagnosticsEnabled) ?? false
         let decodedID = try container.decodeIfPresent(String.self, forKey: .anonymousInstallationID) ?? ""

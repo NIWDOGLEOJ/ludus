@@ -9,6 +9,25 @@ struct OvercrossTestApp {
         print(" Target: Apple Silicon (macOS \(ProcessInfo.processInfo.operatingSystemVersionString))")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
+        if CommandLine.arguments.contains("--live-sm2") {
+            print("Mode: Live Spider-Man 2 Launch & Verification\n")
+            let initialFailures = testFailuresCount
+            let suite = GameLibraryStoreTests()
+            try! suite.setUp()
+            try! await suite.runSpiderMan2LiveExecution()
+            try! suite.tearDown()
+            if testFailuresCount != initialFailures {
+                print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print(" Results: Live Spider-Man 2 Verification FAILED (\(testFailuresCount - initialFailures) failure(s))")
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                exit(1)
+            }
+            print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print(" Results: Live Spider-Man 2 Verification PASSED")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            exit(0)
+        }
+
         var passedCount = 0
         var failedCount = 0
         let suiteStart = Date()
@@ -224,7 +243,45 @@ struct OvercrossTestApp {
         await runAsyncTest(name: "testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy") {
             try await $0.testWindowsLaunchNixxesD3DMetalPreservesDXGIAndD3D12Proxy()
         }
+        await runAsyncTest(name: "testWindowsLaunchNormalizesBareNativeDXGIAndD3D11ToBuiltinFallback") {
+            try await $0.testWindowsLaunchNormalizesBareNativeDXGIAndD3D11ToBuiltinFallback()
+        }
         runTest(name: "testSyncDefaultBottleRegistry") { try $0.testSyncDefaultBottleRegistry() }
+        runTest(name: "testCrossOverDLSSIsolationAndRestoration") { try $0.testCrossOverDLSSIsolationAndRestoration() }
+        await runAsyncTest(name: "testNixxesLaunchInjectsNoStreamlineAndRestoresIsolation") {
+            try await $0.testNixxesLaunchInjectsNoStreamlineAndRestoresIsolation()
+        }
+        runTest(name: "testBottleRegistryModernDriverVersionSync") { try $0.testBottleRegistryModernDriverVersionSync() }
+        runTest(name: "testModalPreflightEvaluatorRejectsNonWineAppsAndMatchesWineDialogs") {
+            $0.testModalPreflightEvaluatorRejectsNonWineAppsAndMatchesWineDialogs()
+        }
+        runTest(name: "testDLSSRestorationPreservesRealStubWhenEmptyFileExists") {
+            try $0.testDLSSRestorationPreservesRealStubWhenEmptyFileExists()
+        }
+
+        // Spider-Man 2 & MacGameFix Verification Tests
+        runTest(name: "testSpiderMan2Detection") { $0.testSpiderMan2Detection() }
+        runTest(name: "testSpiderMan2LegacyD3D12Neutralization") { try $0.testSpiderMan2LegacyD3D12Neutralization() }
+        runTest(name: "testSpiderMan2PEParserValidatesSignatures") { try $0.testSpiderMan2PEParserValidatesSignatures() }
+        runTest(name: "testSpiderMan2FixStatusVerification") { try $0.testSpiderMan2FixStatusVerification() }
+        runTest(name: "testSpiderMan2FixStatusRejectsCorruptedShaderAndBuildMismatch") { try $0.testSpiderMan2FixStatusRejectsCorruptedShaderAndBuildMismatch() }
+        runTest(name: "testSpiderMan2Restore") { try $0.testSpiderMan2Restore() }
+        runTest(name: "testSpiderMan2OptimizationWithNilInstallationURL") { try $0.testSpiderMan2OptimizationWithNilInstallationURL() }
+        runTest(name: "testSpiderMan2OptimizationIntegration") { try $0.testSpiderMan2OptimizationIntegration() }
+        runTest(name: "testSpiderMan2RegistryInputSync") { try $0.testSpiderMan2RegistryInputSync() }
+        runTest(name: "testSpiderMan2TargetGameInstallationIntegrity") { try $0.testSpiderMan2TargetGameInstallationIntegrity() }
+        runTest(name: "testAtiadlxxDriverVersionPatching") { try $0.testAtiadlxxDriverVersionPatching() }
+        runTest(name: "testSpiderMan2BypassDriverWarning") { try $0.testSpiderMan2BypassDriverWarning() }
+
+        // Proton & Steamac Innovations Tests
+        runTest(name: "testTitleOptimizationRegistryRules") { $0.testTitleOptimizationRegistryRules() }
+        runTest(name: "testTitleOptimizationCompatibilityProfileSelection") { $0.testTitleOptimizationCompatibilityProfileSelection() }
+        runTest(name: "testSteamworksBridgeService") { $0.testSteamworksBridgeService() }
+        runTest(name: "testHIDPassthroughServiceAndControllerTuning") { try $0.testHIDPassthroughServiceAndControllerTuning() }
+        runTest(name: "testGameProcessManagerFreezeAndThaw") { $0.testGameProcessManagerFreezeAndThaw() }
+        await runAsyncTest(name: "testWindowsLaunchInjectsProtonAndSteamacOptimizations") {
+            try await $0.testWindowsLaunchInjectsProtonAndSteamacOptimizations()
+        }
 
         let totalElapsed = Date().timeIntervalSince(suiteStart)
         print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

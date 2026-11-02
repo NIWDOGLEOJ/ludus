@@ -592,6 +592,7 @@ struct WineBottleService: Sendable {
 
         var lines = content.components(separatedBy: "\n")
         _ = GameOptimizationService.patchAtiadlxxDriverVersion(in: prefixURL)
+        _ = GameOptimizationService.patchCrossOverWinemacAppIconThreadSafety()
 
         // 1. [Software\Wine\Mac Driver] - Native Spaces FullScreen, Mouse Capture & Confine, Pointer Grab, Retina
         lines = mergeRegistrySection(

@@ -391,7 +391,12 @@ struct GameOptimizationService: Sendable {
             details.append("Patched atiadlxx.dll to Radeon Software 25.10.1")
         }
 
-        // 4. Unreal Engine streaming & VRAM memory optimization
+        // 4. Patch CrossOver winemac.so app icon thread safety to prevent multi-threaded swapchain deadlock
+        if Self.patchCrossOverWinemacAppIconThreadSafety() {
+            details.append("Patched winemac.so app icon thread safety")
+        }
+
+        // 5. Unreal Engine streaming & VRAM memory optimization
         var configuredINI = false
         var poolSize: Int?
         if isUnrealEngineTitle(installationURL: game.installationURL, executableURL: game.executableURL, gameTitle: game.title) {
@@ -1034,6 +1039,45 @@ struct GameOptimizationService: Sendable {
             if modified {
                 try? data.write(to: target)
                 patchedAny = true
+            }
+        }
+        return patchedAny
+    }
+
+    /// Patches CrossOver's winemac.so to route set_app_icon through dispatch_once unconditionally.
+    /// This fixes the multi-threaded reentrancy SEH loop / crash in KiUserCallbackDispatcher during window creation
+    /// in Marvel's Spider-Man 2, Helldivers 2, and other D3D12 titles.
+    @discardableResult
+    public static func patchCrossOverWinemacAppIconThreadSafety(in runtimeURL: URL? = nil) -> Bool {
+        var candidatePaths: [URL] = []
+        if let runtimeURL {
+            candidatePaths.append(runtimeURL.appendingPathComponent("lib/wine/x86_64-unix/winemac.so"))
+            candidatePaths.append(runtimeURL.appendingPathComponent("../lib/wine/x86_64-unix/winemac.so").standardized)
+            candidatePaths.append(runtimeURL.appendingPathComponent("../../lib/wine/x86_64-unix/winemac.so").standardized)
+        }
+        candidatePaths.append(contentsOf: [
+            URL(fileURLWithPath: "/Volumes/sata ssd 1/downloads/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/winemac.so"),
+            URL(fileURLWithPath: "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/winemac.so")
+        ])
+
+        let unpatchedPattern = Data([0x85, 0xc0, 0x74, 0x0f, 0xe8, 0x14, 0x01, 0x00, 0x00])
+        var patchedAny = false
+
+        for candidate in candidatePaths {
+            guard FileManager.default.fileExists(atPath: candidate.path),
+                  var data = try? Data(contentsOf: candidate) else { continue }
+            if let range = data.range(of: unpatchedPattern) {
+                let patchOffset = range.lowerBound + 2
+                data[patchOffset] = 0xeb
+                data[patchOffset + 1] = 0x1a
+                if (try? data.write(to: candidate)) != nil {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+                    process.arguments = ["-f", "-s", "-", candidate.path]
+                    try? process.run()
+                    process.waitUntilExit()
+                    patchedAny = true
+                }
             }
         }
         return patchedAny

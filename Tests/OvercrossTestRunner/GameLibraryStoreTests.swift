@@ -3921,6 +3921,29 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(upgraded32.contains("24.12.1\0"))
     }
 
+    func testCrossOverWinemacAppIconThreadSafetyPatching() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LudusWinemacTest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let winemacDir = tempDir.appendingPathComponent("lib/wine/x86_64-unix")
+        try FileManager.default.createDirectory(at: winemacDir, withIntermediateDirectories: true)
+
+        let winemacURL = winemacDir.appendingPathComponent("winemac.so")
+        let dummyData = Data([0x90, 0x90, 0x85, 0xc0, 0x74, 0x0f, 0xe8, 0x14, 0x01, 0x00, 0x00, 0x90])
+        try dummyData.write(to: winemacURL)
+
+        let patched = GameOptimizationService.patchCrossOverWinemacAppIconThreadSafety(in: tempDir)
+        XCTAssertTrue(patched)
+
+        let patchedData = try Data(contentsOf: winemacURL)
+        XCTAssertEqual(patchedData[4], 0xeb)
+        XCTAssertEqual(patchedData[5], 0x1a)
+
+        // Idempotent: second call returns false
+        let secondPatch = GameOptimizationService.patchCrossOverWinemacAppIconThreadSafety(in: tempDir)
+        XCTAssertFalse(secondPatch)
+    }
+
     #if canImport(AppKit)
     static func analyzeRenderedFrame(imagePath: String, threshold: Double = 0.05) -> (isNonBlack: Bool, nonBlackFraction: Double) {
         guard let img = NSImage(contentsOfFile: imagePath),

@@ -634,10 +634,10 @@ struct WineBottleService: Sendable {
             settings: [
                 "\"DefaultBitsPerSample\"": "dword:00000010",
                 "\"DefaultSampleRate\"": "dword:0000bb80",
-                "\"HelMargin\"": "dword:0000000a",
+                "\"HelMargin\"": "dword:00000028",
                 "\"MaxBuffers\"": "dword:00000040",
-                "\"SndQueueMax\"": "dword:00000020",
-                "\"SpeakerConfig\"": "dword:00000004"
+                "\"SndQueueMax\"": "dword:00000040",
+                "\"SpeakerConfig\"": "dword:00000002"
             ],
             into: lines
         )

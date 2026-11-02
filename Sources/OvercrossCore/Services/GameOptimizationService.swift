@@ -81,10 +81,8 @@ struct GameOptimizationService: Sendable {
         "gfesdk.dll"
     ]
 
-    /// Libraries in Nixxes / Sony PC ports that trigger CrossOver nvngx/Streamline translation deadlocks
-    static let problematicSonyLibraries: Set<String> = [
-        "sl.interposer.dll"
-    ]
+    /// Libraries in Nixxes / Sony PC ports that trigger translation issues (kept empty as sl.interposer.dll is required for D3D12/DXGI bootstrap)
+    static let problematicSonyLibraries: Set<String> = []
 
     /// Scans the game installation directory and automatically restores any essential libraries previously renamed to `.dll.bak`.
     @discardableResult
@@ -368,8 +366,7 @@ struct GameOptimizationService: Sendable {
             neutralized = neutralizeProblematicLibraries(at: targetFolderURL, isSony: isSony)
             if !neutralized.isEmpty {
                 let hasDStorage = neutralized.contains(where: { $0.lowercased().contains("dstorage") })
-                let hasInterposer = neutralized.contains(where: { $0.lowercased().contains("sl.interposer") })
-                let reason = hasDStorage ? "bypassed DirectStorage I/O spinlock" : (hasInterposer ? "bypassed Streamline DLSS deadlock" : "prevented CPU spinlock")
+                let reason = hasDStorage ? "bypassed DirectStorage I/O spinlock" : "prevented CPU spinlock"
                 details.append("Neutralized \(neutralized.joined(separator: ", ")) (\(reason))")
             }
         }

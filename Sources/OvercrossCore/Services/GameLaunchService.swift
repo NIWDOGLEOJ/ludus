@@ -511,7 +511,7 @@ struct GameLaunchService: Sendable {
         }
 
         if isNixxes && !dllOverrides.contains("nvngx") {
-            let nixxesDllOverrides = "nvngx=d;nvngx_dlss=d;nvngx_dlssd=d;nvngx_dlssg=d;sl.dlss=d;sl.dlss_d=d;sl.dlss_g=d;sl.interposer=d"
+            let nixxesDllOverrides = "nvngx=d;nvngx_dlss=d;nvngx_dlssd=d;nvngx_dlssg=d;sl.dlss=d;sl.dlss_d=d;sl.dlss_g=d"
             dllOverrides = dllOverrides.isEmpty ? nixxesDllOverrides : "\(nixxesDllOverrides);\(dllOverrides)"
         }
 

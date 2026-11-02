@@ -3650,11 +3650,10 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
 
         let report = GameOptimizationService().optimize(game: game, prefixURL: prefixURL)
 
-        // 1. DirectStorage and Streamline neutralized
+        // 1. DirectStorage neutralized and essential interposer preserved
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("dstorage.dll.bak").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("sl.interposer.dll.bak").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dstorageURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: interposerURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: interposerURL.path))
 
         // 2. Legacy d3d12.dll neutralized
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("d3d12.dll.bak").path))

@@ -1227,8 +1227,8 @@ struct TitleOptimizationRegistry: Sendable {
             vkd3dFeatureLevel: "12_0",
             vkd3dShaderModel: "6_6",
             enableMSync: true,
-            recommendedArguments: ["-nolauncher", "-nostreamline", "-reducedtextureheap", "-nodmaengine"],
-            notes: "Bypasses Nixxes launcher dialog and isolates Streamline/DLSS"
+            recommendedArguments: ["-nolauncher", "-nostreamline", "-reducedtextureheap", "-nodmaengine", "-max_job_threads", "4", "-enable_low_res_collision"],
+            notes: "Bypasses Nixxes launcher dialog, isolates Streamline/DLSS, and bounds worker threads on Apple Silicon"
         ),
         // Death's Door: Unity Direct3D 11 title runs best on DXMT (direct Metal)
         TitleOptimizationRule(

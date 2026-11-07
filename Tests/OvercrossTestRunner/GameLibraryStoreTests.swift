@@ -4294,6 +4294,10 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fh6Rule?.recommendedBackend, .d3dmetal)
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_VENDOR_ID"], "0x10de")
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 4070")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_WAIT_ON_RESET"], "1")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_RETAIN_REFERENCES"], "1")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_ENABLE_ASYNC_COMMIT"], "1")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_ALLOW_HOOKING"], "1")
         XCTAssertTrue(fh6Rule?.additionalEnvironment["WINEDLLOVERRIDES"]?.contains("concrt140") == true)
 
         // 5. Non-matching appID returns nil
@@ -4329,6 +4333,57 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
             executableURL: tempDir.appendingPathComponent("Spider-Man2.exe"),
             installationURL: tempDir
         ))
+    }
+
+    func testForzaSeriesOptimization() throws {
+        XCTAssertTrue(GameOptimizationService.isForzaSeries(title: "Forza Horizon 5", executableURL: nil))
+        XCTAssertTrue(GameOptimizationService.isForzaSeries(title: "Forza Horizon 6", executableURL: URL(fileURLWithPath: "forzahorizon6.exe")))
+        XCTAssertTrue(GameOptimizationService.isForzaSeries(title: "Game", executableURL: URL(fileURLWithPath: "forzamotorsport.exe")))
+        XCTAssertFalse(GameOptimizationService.isForzaSeries(title: "Spider-Man", executableURL: URL(fileURLWithPath: "game.exe")))
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let videosDir = tempDir.appendingPathComponent("media/UI/Videos", isDirectory: true)
+        try FileManager.default.createDirectory(at: videosDir, withIntermediateDirectories: true)
+        let introVideo = videosDir.appendingPathComponent("T10_MS_Combined.bk2")
+        try "video_data".write(to: introVideo, atomically: true, encoding: .utf8)
+
+        let steamEmuFile = tempDir.appendingPathComponent("steam_emu.ini")
+        let emuConfig = """
+        [Settings]
+        Offline=0
+        Overlays=1
+        SteamClient=1
+        """
+        try emuConfig.write(to: steamEmuFile, atomically: true, encoding: .utf8)
+
+        let steamSettingsDir = tempDir.appendingPathComponent("steam_settings", isDirectory: true)
+        try FileManager.default.createDirectory(at: steamSettingsDir, withIntermediateDirectories: true)
+
+        let agsFile = tempDir.appendingPathComponent("amd_ags_x64.dll")
+        try "ags_data".write(to: agsFile, atomically: true, encoding: .utf8)
+
+        let details = GameOptimizationService.optimizeForzaSeries(at: tempDir)
+        XCTAssertTrue(details.contains(where: { $0.contains("Bypassed intro video (T10_MS_Combined.bk2)") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Configured offline mode in steam_emu.ini") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Enabled offline mode in steam_settings") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Neutralized amd_ags_x64.dll") }))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: introVideo.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: videosDir.appendingPathComponent("T10_MS_Combined.bk2.bak").path))
+
+        let updatedEmu = try String(contentsOf: steamEmuFile, encoding: .utf8)
+        XCTAssertTrue(updatedEmu.contains("Offline=1"))
+        XCTAssertTrue(updatedEmu.contains("Overlays=0"))
+        XCTAssertTrue(updatedEmu.contains("SteamClient=0"))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("offline.txt").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("disable_overlay.txt").path))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: agsFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("amd_ags_x64.dll.bak").path))
     }
 
     func testBundledAgilityD3D12CoreNeutralization() throws {

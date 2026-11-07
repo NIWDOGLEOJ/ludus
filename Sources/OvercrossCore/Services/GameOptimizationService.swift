@@ -415,6 +415,14 @@ struct GameOptimizationService: Sendable {
             details.append("Injected NVIDIA RTX 4070 GPU profile (bypassed AMD AGS NoDevice)")
         }
 
+        // 7. Forza Horizon & Motorsport Automated Video, Audio & Auth Optimization
+        if Self.isForzaSeries(title: game.title, executableURL: game.executableURL) {
+            if let targetFolderURL {
+                let forzaDetails = Self.optimizeForzaSeries(at: targetFolderURL)
+                details.append(contentsOf: forzaDetails)
+            }
+        }
+
         return GameOptimizationReport(
             neutralizedLibraries: neutralized,
             configuredEngineINI: configuredINI,
@@ -1141,6 +1149,108 @@ struct GameOptimizationService: Sendable {
         return didPatch || callBytes == patchedCall
     }
 
+    /// Detects whether a game is part of the Forza series (Forza Horizon 4/5/6, Forza Motorsport).
+    public static func isForzaSeries(title: String, executableURL: URL?) -> Bool {
+        let t = title.lowercased()
+        let exe = executableURL?.deletingPathExtension().lastPathComponent.lowercased() ?? ""
+        return t.contains("forza") || exe.contains("forza")
+    }
+
+    /// Automatically applies game file optimizations for Forza Horizon / Motorsport:
+    /// 1. Bypasses opening video sequences (e.g. T10_MS_Combined.bk2) that stall in Wine Media Foundation / Bink decoders
+    /// 2. Configures offline mode in Steam emulators (steam_emu.ini, Goldberg, steam_settings) to avoid WebView2 / Xbox Live authentication deadlocks
+    /// 3. Neutralizes amd_ags_x64.dll to prevent AGS_ERROR_NO_AMD_DEVICE deadlock when NVIDIA GPU spoofing is active
+    public static func optimizeForzaSeries(at installationURL: URL) -> [String] {
+        let dir = normalizeGameDirectoryURL(from: installationURL)
+        var details: [String] = []
+
+        // 1. Neutralize startup intro videos that stall in Wine Media Foundation/Bink
+        let videoStems = [
+            "t10_ms_combined",
+            "startup_movies",
+            "turn10",
+            "playgroundgames",
+            "xboxgamestudios"
+        ]
+
+        let enumerator = FileManager.default.enumerator(
+            at: dir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        while let fileURL = enumerator?.nextObject() as? URL {
+            let stem = fileURL.deletingPathExtension().lastPathComponent.lowercased()
+            let ext = fileURL.pathExtension.lowercased()
+
+            if (ext == "bk2" || ext == "mp4") && videoStems.contains(stem) {
+                let backupURL = fileURL.appendingPathExtension("bak")
+                if !FileManager.default.fileExists(atPath: backupURL.path) {
+                    do {
+                        try FileManager.default.moveItem(at: fileURL, to: backupURL)
+                        details.append("Bypassed intro video (\(fileURL.lastPathComponent))")
+                    } catch {
+                        // ignore move errors
+                    }
+                }
+            }
+        }
+
+        // 2. Optimize steam_emu.ini to eliminate Xbox Live / Steam overlay timeouts
+        let steamEmuURLs = [
+            dir.appendingPathComponent("steam_emu.ini"),
+            dir.appendingPathComponent("GoldbergSteamEmu.ini")
+        ]
+        for emuURL in steamEmuURLs {
+            if FileManager.default.fileExists(atPath: emuURL.path),
+               let content = try? String(contentsOf: emuURL, encoding: .utf8) {
+                var updated = content
+                updated = updated.replacingOccurrences(of: "Overlays=1", with: "Overlays=0")
+                updated = updated.replacingOccurrences(of: "Offline=0", with: "Offline=1")
+                updated = updated.replacingOccurrences(of: "SteamClient=1", with: "SteamClient=0")
+                if updated != content {
+                    try? updated.write(to: emuURL, atomically: true, encoding: .utf8)
+                    details.append("Configured offline mode in \(emuURL.lastPathComponent)")
+                }
+            }
+        }
+
+        // 3. Configure steam_settings offline flag if directory is present
+        let steamSettingsDir = dir.appendingPathComponent("steam_settings")
+        if FileManager.default.fileExists(atPath: steamSettingsDir.path) {
+            let offlineFile = steamSettingsDir.appendingPathComponent("offline.txt")
+            let disableOverlayFile = steamSettingsDir.appendingPathComponent("disable_overlay.txt")
+            if !FileManager.default.fileExists(atPath: offlineFile.path) {
+                try? "1".write(to: offlineFile, atomically: true, encoding: .utf8)
+                details.append("Enabled offline mode in steam_settings")
+            }
+            if !FileManager.default.fileExists(atPath: disableOverlayFile.path) {
+                try? "1".write(to: disableOverlayFile, atomically: true, encoding: .utf8)
+                details.append("Disabled overlay in steam_settings")
+            }
+        }
+
+        // 4. Safely neutralize amd_ags_x64.dll when NVIDIA spoofing is active to prevent AGS NoDevice crash loop
+        let agsCandidates = [
+            dir.appendingPathComponent("amd_ags_x64.dll"),
+            dir.appendingPathComponent("amd_ags.dll")
+        ]
+        for agsURL in agsCandidates {
+            if FileManager.default.fileExists(atPath: agsURL.path) {
+                let backupURL = agsURL.appendingPathExtension("bak")
+                if !FileManager.default.fileExists(atPath: backupURL.path) {
+                    do {
+                        try FileManager.default.moveItem(at: agsURL, to: backupURL)
+                        details.append("Neutralized \(agsURL.lastPathComponent) (direct D3D12 fallback)")
+                    } catch {
+                        // ignore move errors
+                    }
+                }
+            }
+        }
+
+        return details
+    }
+
     /// Detects whether a game binary or its installation folder requires NVIDIA RTX 4070 GPU spoofing
     /// to bypass vendor-specific initialization crashes (such as AMD AGS `NoDevice` crash / exit code 1) on Apple Silicon D3DMetal.
     public static func requiresNvidiaGpuSpoofing(
@@ -1170,7 +1280,9 @@ struct GameOptimizationService: Sendable {
         for root in searchURLs {
             guard FileManager.default.fileExists(atPath: root.path) else { continue }
             if FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags_x64.dll").path) ||
-               FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags.dll").path) {
+               FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags_x64.dll.bak").path) ||
+               FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags.dll").path) ||
+               FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags.dll.bak").path) {
                 return true
             }
             // Check immediate subdirectories (e.g. Binaries/Win64)
@@ -1179,7 +1291,9 @@ struct GameOptimizationService: Sendable {
                     var isDir: ObjCBool = false
                     if FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
                         if FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags_x64.dll").path) ||
-                           FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags.dll").path) {
+                           FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags_x64.dll.bak").path) ||
+                           FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags.dll").path) ||
+                           FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags.dll.bak").path) {
                             return true
                         }
                     }
@@ -1411,11 +1525,16 @@ struct TitleOptimizationRegistry: Sendable {
                 "D3DM_DEVICE_ID": "0x2786",
                 "D3DM_DEVICE_DESCRIPTION": "NVIDIA GeForce RTX 4070",
                 "D3DM_MULTITHREADED_INTERFACE_ENABLE": "0",
-                "D3DM_ENABLE_ASYNC_COMMIT": "0",
+                "D3DM_ENABLE_ASYNC_COMMIT": "1",
+                "D3DM_WAIT_ON_RESET": "1",
+                "D3DM_RETAIN_REFERENCES": "1",
+                "D3DM_ALLOW_HOOKING": "1",
                 "HB_D3D12_TSSHIM": "1",
+                "MTL_DEVICE_FORCE_NO_GPU_ASSERT": "1",
+                "MTL_COMMAND_BUFFER_FORCE_NO_COMPLETION_ASSERT": "1",
                 "WINEDLLOVERRIDES": "concrt140,msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,vcruntime140_threads=native,builtin"
             ],
-            notes: "Configures NVIDIA RTX 4070 GPU spoofing to bypass AMD AGS NoDevice crash and enforces native VC++ runtimes"
+            notes: "Configures NVIDIA RTX 4070 GPU spoofing, command encoder synchronization, and native VC++ runtimes"
         )
     ]
 

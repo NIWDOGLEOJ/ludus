@@ -364,6 +364,10 @@ struct GameLaunchService: Sendable {
         if backend == .d3dmetal || backend == .automatic {
             environment["DX12_MAX_FRAME_LATENCY"] = "2"
             environment["D3DMETAL_SUBMISSION_MODE"] = "immediate"
+            environment["D3DM_WAIT_ON_RESET"] = "1"
+            environment["D3DM_RETAIN_REFERENCES"] = "1"
+            environment["MTL_DEVICE_FORCE_NO_GPU_ASSERT"] = "1"
+            environment["MTL_COMMAND_BUFFER_FORCE_NO_COMPLETION_ASSERT"] = "1"
         } else if backend == .dxvk {
             environment["DXVK_ASYNC"] = "1"
             environment["DXVK_STATE_CACHE"] = "1"
@@ -482,10 +486,25 @@ struct GameLaunchService: Sendable {
                     environment["D3DM_MULTITHREADED_INTERFACE_ENABLE"] = "0"
                 }
                 if environment["D3DM_ENABLE_ASYNC_COMMIT"] == nil {
-                    environment["D3DM_ENABLE_ASYNC_COMMIT"] = "0"
+                    environment["D3DM_ENABLE_ASYNC_COMMIT"] = "1"
+                }
+                if environment["D3DM_WAIT_ON_RESET"] == nil {
+                    environment["D3DM_WAIT_ON_RESET"] = "1"
+                }
+                if environment["D3DM_RETAIN_REFERENCES"] == nil {
+                    environment["D3DM_RETAIN_REFERENCES"] = "1"
+                }
+                if environment["D3DM_ALLOW_HOOKING"] == nil {
+                    environment["D3DM_ALLOW_HOOKING"] = "1"
                 }
                 if environment["HB_D3D12_TSSHIM"] == nil {
                     environment["HB_D3D12_TSSHIM"] = "1"
+                }
+                if environment["MTL_DEVICE_FORCE_NO_GPU_ASSERT"] == nil {
+                    environment["MTL_DEVICE_FORCE_NO_GPU_ASSERT"] = "1"
+                }
+                if environment["MTL_COMMAND_BUFFER_FORCE_NO_COMPLETION_ASSERT"] == nil {
+                    environment["MTL_COMMAND_BUFFER_FORCE_NO_COMPLETION_ASSERT"] = "1"
                 }
                 diagnosticNotes.append("Configured NVIDIA RTX 4070 GPU profile (bypassed AMD AGS vendor deadlock).")
             }

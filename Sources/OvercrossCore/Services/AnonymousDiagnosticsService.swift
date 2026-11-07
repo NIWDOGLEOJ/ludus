@@ -104,7 +104,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
     }
 
     public static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.4"
     }
 
     // MARK: - Log Sanitization (PII Scrubbing)
@@ -405,7 +405,11 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         customBotToken: String? = nil,
         customChatID: String? = nil
     ) async throws {
-        let isSuccess = (exitStatus == 0)
+        let combinedLogs = [standardError, standardOutput].filter { !$0.isEmpty }.joined(separator: "\n")
+        let hasFatalAssertion = combinedLogs.contains("failed assertion `Command encoder released without endEncoding'") ||
+                                combinedLogs.contains("failed assertion") ||
+                                combinedLogs.contains("STATUS_ACCESS_VIOLATION")
+        let isSuccess = (exitStatus == 0) && !hasFatalAssertion
         let isoDate = ISO8601DateFormatter().string(from: Date())
         let ramString = ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
         let durationFormatted = Self.formatDuration(duration)
@@ -417,6 +421,9 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         if isSuccess {
             header = "🎮 <b>Ludus Game Session Report</b> ✅"
             statusLine = "• <b>Session Outcome:</b> <b>Ran Successfully (Clean Exit)</b>\n• <b>Exit Code:</b> <code>0</code>"
+        } else if hasFatalAssertion {
+            header = "🚨 <b>Ludus Game Session Report (Metal Assertion)</b> ❌"
+            statusLine = "• <b>Session Outcome:</b> <b>Terminated on Graphics Assertion</b>\n• <b>Exit Code:</b> <code>\(exitStatus)</code>"
         } else {
             header = "🚨 <b>Ludus Game Execution Failure</b> ❌"
             statusLine = "• <b>Session Outcome:</b> <b>Process Exited with Error</b>\n• <b>Exit Code:</b> <code>\(exitStatus)</code>"
@@ -452,7 +459,6 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         """
 
         // Append execution logs if available (essential for failures, optional for success)
-        let combinedLogs = [standardError, standardOutput].filter { !$0.isEmpty }.joined(separator: "\n")
         if !combinedLogs.isEmpty {
             let sanitized = Self.sanitize(log: combinedLogs)
             let lines = sanitized.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }

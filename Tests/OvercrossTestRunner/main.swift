@@ -279,6 +279,7 @@ struct OvercrossTestApp {
         // Proton & Steamac Innovations Tests
         runTest(name: "testTitleOptimizationRegistryRules") { $0.testTitleOptimizationRegistryRules() }
         runTest(name: "testForzaAndAmdAgsGpuSpoofingDetection") { try $0.testForzaAndAmdAgsGpuSpoofingDetection() }
+        runTest(name: "testForzaSeriesOptimization") { try $0.testForzaSeriesOptimization() }
         runTest(name: "testBundledAgilityD3D12CoreNeutralization") { try $0.testBundledAgilityD3D12CoreNeutralization() }
         runTest(name: "testMsvcRuntimeOverridesDetection") { try $0.testMsvcRuntimeOverridesDetection() }
         runTest(name: "testTitleOptimizationCompatibilityProfileSelection") { $0.testTitleOptimizationCompatibilityProfileSelection() }

@@ -686,20 +686,14 @@ struct GameLaunchService: Sendable {
             WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
         }
 
-        var steamStubDaemon: Process?
         if SteamStubService.shouldLaunchSteamStub(game: game, installationURL: game.installationURL ?? workingDir) {
-            steamStubDaemon = SteamStubService.launchStubDaemon(
-                runtimeExecutableURL: runtimeExecutableURL,
+            let steamActions = SteamStubService.provisionSteamRegistry(
                 prefixURL: prefix.url,
-                bottleName: prefix.name,
                 installationURL: game.installationURL ?? workingDir
             )
-            if steamStubDaemon != nil {
-                diagnosticNotes.append("Active Steam process helper initialized.")
+            if !steamActions.isEmpty {
+                diagnosticNotes.append("Active Steam environment initialized in Wine registry.")
             }
-        }
-        defer {
-            steamStubDaemon?.terminate()
         }
 
         var outcome = try await launchProcess(

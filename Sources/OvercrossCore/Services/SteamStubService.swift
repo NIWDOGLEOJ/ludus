@@ -134,48 +134,73 @@ struct SteamStubService: Sendable {
         return actions
     }
 
-    /// Launches `ludus_steam_stub.exe` as a background daemon before game launch.
+    /// Provisions `HKCU\Software\Valve\Steam\ActiveProcess` and `HKCU\Software\Valve\Steam` in the bottle's `user.reg`
+    /// so that `SteamAPI_IsSteamRunning()` returns true and game engines locate the Steam client without running an external helper daemon.
+    @discardableResult
+    static func provisionSteamRegistry(
+        prefixURL: URL,
+        installationURL: URL
+    ) -> [String] {
+        var actions: [String] = []
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard FileManager.default.fileExists(atPath: userRegURL.path),
+              let content = try? String(contentsOf: userRegURL, encoding: .utf8) else {
+            return actions
+        }
+
+        let winInstallationPath = "C:\\\\Program Files (x86)\\\\Steam"
+        let escapedWinPath = winInstallationPath.replacingOccurrences(of: "\\", with: "\\\\")
+        let escapedClientDll64 = (winInstallationPath + "\\\\steamclient64.dll").replacingOccurrences(of: "\\", with: "\\\\")
+        let escapedClientDll = (winInstallationPath + "\\\\steamclient.dll").replacingOccurrences(of: "\\", with: "\\\\")
+
+        var lines = content.components(separatedBy: "\n")
+
+        // 1. HKCU\Software\Valve\Steam\ActiveProcess
+        let activeProcessSettings: [String: String] = [
+            "\"ActiveUser\"": "dword:00000001",
+            "\"pid\"": "dword:00001337",
+            "\"Universe\"": "\"Public\"",
+            "\"SteamClientDll64\"": "\"\(escapedClientDll64)\"",
+            "\"SteamClientDll\"": "\"\(escapedClientDll)\"",
+            "\"SteamPath\"": "\"\(escapedWinPath)\""
+        ]
+        lines = WineBottleService.mergeRegistrySection(
+            named: "Software\\Valve\\Steam\\ActiveProcess",
+            settings: activeProcessSettings,
+            into: lines
+        )
+
+        // 2. HKCU\Software\Valve\Steam
+        let steamSettings: [String: String] = [
+            "\"SteamPath\"": "\"\(escapedWinPath)\"",
+            "\"SteamExe\"": "\"\(escapedWinPath)\\\\steam.exe\"",
+            "\"Language\"": "\"english\"",
+            "\"AutoLoginUser\"": "\"ludus\"",
+            "\"RememberPassword\"": "dword:00000001"
+        ]
+        lines = WineBottleService.mergeRegistrySection(
+            named: "Software\\Valve\\Steam",
+            settings: steamSettings,
+            into: lines
+        )
+
+        let newContent = lines.joined(separator: "\n")
+        if newContent != content {
+            try? newContent.write(to: userRegURL, atomically: true, encoding: .utf8)
+            actions.append("Provisioned active Steam environment in Wine registry.")
+        }
+        return actions
+    }
+
+    /// Configures the active Steam registry environment before game launch.
+    @discardableResult
     static func launchStubDaemon(
         runtimeExecutableURL: URL,
         prefixURL: URL,
         bottleName: String,
         installationURL: URL
     ) -> Process? {
-        let isWine = runtimeExecutableURL.lastPathComponent.lowercased().contains("wine") ||
-                     runtimeExecutableURL.path.contains("CrossOver")
-        guard isWine else { return nil }
-        guard ensureStubInstalled(in: prefixURL) != nil else { return nil }
-
-        let isCrossOverWine = runtimeExecutableURL.path.contains("SharedSupport/CrossOver") ||
-                              runtimeExecutableURL.path.contains("CrossOver") ||
-                              runtimeExecutableURL.lastPathComponent == "wine"
-
-        var arguments: [String] = []
-        if isCrossOverWine {
-            arguments.append(contentsOf: ["--bottle", bottleName])
-        }
-
-        // Convert installation URL to Wine Z: path
-        let posixPath = installationURL.path
-        let winInstallationPath = "Z:" + posixPath.replacingOccurrences(of: "/", with: "\\")
-        let steamSubdir = winInstallationPath + "\\Steam"
-        let steamClientDll = winInstallationPath + "\\Steam\\steamclient64.dll"
-
-        let stubWinePath = "C:\\windows\\system32\\ludus_steam_stub.exe"
-        arguments.append(contentsOf: [stubWinePath, steamSubdir, steamClientDll])
-
-        let process = Process()
-        process.executableURL = runtimeExecutableURL
-        process.arguments = arguments
-        process.environment = ProcessInfo.processInfo.environment
-
-        do {
-            try process.run()
-            // Brief pause to allow the stub to register itself into HKCU\Software\Valve\Steam\ActiveProcess
-            Thread.sleep(forTimeInterval: 0.25)
-            return process
-        } catch {
-            return nil
-        }
+        provisionSteamRegistry(prefixURL: prefixURL, installationURL: installationURL)
+        return nil
     }
 }

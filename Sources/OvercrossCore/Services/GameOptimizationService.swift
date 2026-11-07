@@ -1170,14 +1170,14 @@ struct GameOptimizationService: Sendable {
     }
 
     /// Automatically applies game file optimizations for Forza Horizon / Motorsport:
-    /// 1. Bypasses opening video sequences (e.g. T10_MS_Combined.bk2) that stall in Wine Media Foundation / Bink decoders
-    /// 2. Configures offline mode in Steam emulators (steam_emu.ini, Goldberg, steam_settings) to avoid WebView2 / Xbox Live authentication deadlocks
+    /// 1. Preserves and restores opening video sequences (e.g. T10_MS_Combined.bk2) required by the video sequence state machine
+    /// 2. Configures cloud storage emulation and disables overlays in Steam emulators (steam_emu.ini, Goldberg, steam_settings) to ensure PlayFab Connected Storage initializes
     /// 3. Neutralizes amd_ags_x64.dll to prevent AGS_ERROR_NO_AMD_DEVICE deadlock when NVIDIA GPU spoofing is active
     public static func optimizeForzaSeries(at installationURL: URL) -> [String] {
         let dir = normalizeGameDirectoryURL(from: installationURL)
         var details: [String] = []
 
-        // 1. Neutralize startup intro videos that stall in Wine Media Foundation/Bink
+        // 1. Ensure startup intro videos are intact; restore any previously neutralized *.bk2.bak / *.mp4.bak
         let videoStems = [
             "t10_ms_combined",
             "startup_movies",
@@ -1192,15 +1192,14 @@ struct GameOptimizationService: Sendable {
             options: [.skipsHiddenFiles]
         )
         while let fileURL = enumerator?.nextObject() as? URL {
-            let stem = fileURL.deletingPathExtension().lastPathComponent.lowercased()
             let ext = fileURL.pathExtension.lowercased()
-
-            if (ext == "bk2" || ext == "mp4") && videoStems.contains(stem) {
-                let backupURL = fileURL.appendingPathExtension("bak")
-                if !FileManager.default.fileExists(atPath: backupURL.path) {
+            if ext == "bak" {
+                let originalURL = fileURL.deletingPathExtension()
+                let originalStem = originalURL.deletingPathExtension().lastPathComponent.lowercased()
+                if videoStems.contains(originalStem) && !FileManager.default.fileExists(atPath: originalURL.path) {
                     do {
-                        try FileManager.default.moveItem(at: fileURL, to: backupURL)
-                        details.append("Bypassed intro video (\(fileURL.lastPathComponent))")
+                        try FileManager.default.moveItem(at: fileURL, to: originalURL)
+                        details.append("Restored intro video (\(originalURL.lastPathComponent))")
                     } catch {
                         // ignore move errors
                     }
@@ -1208,7 +1207,7 @@ struct GameOptimizationService: Sendable {
             }
         }
 
-        // 2. Optimize steam_emu.ini to eliminate Xbox Live / Steam overlay timeouts
+        // 2. Optimize steam_emu.ini to ensure SteamRemoteStorage & PlayFabConnectedStorage work while preventing overlay hooks
         let steamEmuURLs = [
             dir.appendingPathComponent("steam_emu.ini"),
             dir.appendingPathComponent("GoldbergSteamEmu.ini")
@@ -1217,25 +1216,34 @@ struct GameOptimizationService: Sendable {
             if FileManager.default.fileExists(atPath: emuURL.path),
                let content = try? String(contentsOf: emuURL, encoding: .utf8) {
                 var updated = content
+                // Overlays MUST be disabled to prevent D3DMetal hook crash
                 updated = updated.replacingOccurrences(of: "Overlays=1", with: "Overlays=0")
-                updated = updated.replacingOccurrences(of: "Offline=0", with: "Offline=1")
-                updated = updated.replacingOccurrences(of: "SteamClient=1", with: "SteamClient=0")
+                // Cloud storage MUST be enabled (Offline=0) so SteamRemoteStorage & PlayFabConnectedStorage work
+                updated = updated.replacingOccurrences(of: "Offline=1", with: "Offline=0")
+                // SteamClient MUST be enabled so the emulator exposes Steam client APIs
+                updated = updated.replacingOccurrences(of: "SteamClient=0", with: "SteamClient=1")
+                // Ensure AccountId=13371337 matches MicrosoftStore profile directory
+                if updated.contains("#AccountId=0") {
+                    updated = updated.replacingOccurrences(of: "#AccountId=0", with: "AccountId=13371337")
+                } else if updated.contains("AccountId=0") {
+                    updated = updated.replacingOccurrences(of: "AccountId=0", with: "AccountId=13371337")
+                }
                 if updated != content {
                     try? updated.write(to: emuURL, atomically: true, encoding: .utf8)
-                    details.append("Configured offline mode in \(emuURL.lastPathComponent)")
+                    details.append("Configured cloud storage emulation in \(emuURL.lastPathComponent)")
                 }
             }
         }
 
-        // 3. Configure steam_settings offline flag if directory is present
+        // 3. Remove steam_settings/offline.txt if present (it breaks cloud storage) and ensure disable_overlay.txt
         let steamSettingsDir = dir.appendingPathComponent("steam_settings")
         if FileManager.default.fileExists(atPath: steamSettingsDir.path) {
             let offlineFile = steamSettingsDir.appendingPathComponent("offline.txt")
-            let disableOverlayFile = steamSettingsDir.appendingPathComponent("disable_overlay.txt")
-            if !FileManager.default.fileExists(atPath: offlineFile.path) {
-                try? "1".write(to: offlineFile, atomically: true, encoding: .utf8)
-                details.append("Enabled offline mode in steam_settings")
+            if FileManager.default.fileExists(atPath: offlineFile.path) {
+                try? FileManager.default.removeItem(at: offlineFile)
+                details.append("Removed offline.txt from steam_settings to preserve cloud storage")
             }
+            let disableOverlayFile = steamSettingsDir.appendingPathComponent("disable_overlay.txt")
             if !FileManager.default.fileExists(atPath: disableOverlayFile.path) {
                 try? "1".write(to: disableOverlayFile, atomically: true, encoding: .utf8)
                 details.append("Disabled overlay in steam_settings")

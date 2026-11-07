@@ -4347,39 +4347,43 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
 
         let videosDir = tempDir.appendingPathComponent("media/UI/Videos", isDirectory: true)
         try FileManager.default.createDirectory(at: videosDir, withIntermediateDirectories: true)
-        let introVideo = videosDir.appendingPathComponent("T10_MS_Combined.bk2")
-        try "video_data".write(to: introVideo, atomically: true, encoding: .utf8)
+        let introVideoBak = videosDir.appendingPathComponent("T10_MS_Combined.bk2.bak")
+        try "video_data".write(to: introVideoBak, atomically: true, encoding: .utf8)
 
         let steamEmuFile = tempDir.appendingPathComponent("steam_emu.ini")
         let emuConfig = """
         [Settings]
-        Offline=0
+        Offline=1
         Overlays=1
-        SteamClient=1
+        SteamClient=0
+        #AccountId=0
         """
         try emuConfig.write(to: steamEmuFile, atomically: true, encoding: .utf8)
 
         let steamSettingsDir = tempDir.appendingPathComponent("steam_settings", isDirectory: true)
         try FileManager.default.createDirectory(at: steamSettingsDir, withIntermediateDirectories: true)
+        let offlineFile = steamSettingsDir.appendingPathComponent("offline.txt")
+        try "1".write(to: offlineFile, atomically: true, encoding: .utf8)
 
         let agsBackupFile = tempDir.appendingPathComponent("amd_ags_x64.dll.bak")
         try "ags_data".write(to: agsBackupFile, atomically: true, encoding: .utf8)
 
         let details = GameOptimizationService.optimizeForzaSeries(at: tempDir)
-        XCTAssertTrue(details.contains(where: { $0.contains("Bypassed intro video (T10_MS_Combined.bk2)") }))
-        XCTAssertTrue(details.contains(where: { $0.contains("Configured offline mode in steam_emu.ini") }))
-        XCTAssertTrue(details.contains(where: { $0.contains("Enabled offline mode in steam_settings") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Restored intro video (T10_MS_Combined.bk2)") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Configured cloud storage emulation in steam_emu.ini") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Removed offline.txt from steam_settings to preserve cloud storage") }))
         XCTAssertTrue(details.contains(where: { $0.contains("Restored essential amd_ags_x64.dll PE import") }))
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: introVideo.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: videosDir.appendingPathComponent("T10_MS_Combined.bk2.bak").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: videosDir.appendingPathComponent("T10_MS_Combined.bk2").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: introVideoBak.path))
 
         let updatedEmu = try String(contentsOf: steamEmuFile, encoding: .utf8)
-        XCTAssertTrue(updatedEmu.contains("Offline=1"))
+        XCTAssertTrue(updatedEmu.contains("Offline=0"))
         XCTAssertTrue(updatedEmu.contains("Overlays=0"))
-        XCTAssertTrue(updatedEmu.contains("SteamClient=0"))
+        XCTAssertTrue(updatedEmu.contains("SteamClient=1"))
+        XCTAssertTrue(updatedEmu.contains("AccountId=13371337"))
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("offline.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: offlineFile.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("disable_overlay.txt").path))
 
         let agsFile = tempDir.appendingPathComponent("amd_ags_x64.dll")
@@ -4644,6 +4648,16 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(FileManager.default.fileExists(atPath: codexLink.path))
         let msRunePls = prefixDir.appendingPathComponent("drive_c/users/Public/Documents/MicrosoftStore/RUNE/Forza Horizon 6 [7BF69384]/1337133713371337/PersistentLocalStorage")
         XCTAssertTrue(FileManager.default.fileExists(atPath: msRunePls.path))
+
+        // 5. Active Steam registry environment provisioning
+        let userRegURL = prefixDir.appendingPathComponent("user.reg")
+        try "WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1-5-21-0-0-0-1000\n".write(to: userRegURL, atomically: true, encoding: .utf8)
+        let regActions = SteamStubService.provisionSteamRegistry(prefixURL: prefixDir, installationURL: tempDir)
+        XCTAssertFalse(regActions.isEmpty)
+        let regContent = try String(contentsOf: userRegURL, encoding: .utf8)
+        XCTAssertTrue(regContent.contains("Software\\\\Valve\\\\Steam\\\\ActiveProcess"))
+        XCTAssertTrue(regContent.contains("\"ActiveUser\"=dword:00000001"))
+        XCTAssertTrue(regContent.contains("\"pid\"=dword:00001337"))
     }
 }
 

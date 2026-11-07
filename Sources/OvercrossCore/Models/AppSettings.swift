@@ -23,6 +23,8 @@ struct AppSettings: Codable, Equatable {
     var anonymousDiagnosticsEnabled = false
     var anonymousInstallationID: String = UUID().uuidString
     var customDiagnosticsEndpoint: String?
+    var telegramBotToken: String?
+    var telegramChatID: String?
 
     private static let storageKey = "overcross.settings"
 
@@ -44,7 +46,9 @@ struct AppSettings: Codable, Equatable {
         diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined,
         anonymousDiagnosticsEnabled: Bool = false,
         anonymousInstallationID: String = UUID().uuidString,
-        customDiagnosticsEndpoint: String? = nil
+        customDiagnosticsEndpoint: String? = nil,
+        telegramBotToken: String? = nil,
+        telegramChatID: String? = nil
     ) {
         self.preferredInstallDirectory = preferredInstallDirectory
         self.heroicLegendaryConfigDirectory = heroicLegendaryConfigDirectory
@@ -64,6 +68,8 @@ struct AppSettings: Codable, Equatable {
         self.anonymousDiagnosticsEnabled = anonymousDiagnosticsEnabled
         self.anonymousInstallationID = anonymousInstallationID.isEmpty ? UUID().uuidString : anonymousInstallationID
         self.customDiagnosticsEndpoint = customDiagnosticsEndpoint
+        self.telegramBotToken = telegramBotToken
+        self.telegramChatID = telegramChatID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -85,6 +91,8 @@ struct AppSettings: Codable, Equatable {
         case anonymousDiagnosticsEnabled
         case anonymousInstallationID
         case customDiagnosticsEndpoint
+        case telegramBotToken
+        case telegramChatID
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +116,8 @@ struct AppSettings: Codable, Equatable {
         let decodedID = try container.decodeIfPresent(String.self, forKey: .anonymousInstallationID) ?? ""
         anonymousInstallationID = decodedID.isEmpty ? UUID().uuidString : decodedID
         customDiagnosticsEndpoint = try container.decodeIfPresent(String.self, forKey: .customDiagnosticsEndpoint)
+        telegramBotToken = try container.decodeIfPresent(String.self, forKey: .telegramBotToken)
+        telegramChatID = try container.decodeIfPresent(String.self, forKey: .telegramChatID)
     }
 
     static func load() -> AppSettings {

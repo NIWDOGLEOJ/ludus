@@ -219,6 +219,7 @@ struct OvercrossTestApp {
         runTest(name: "testAnonymousDiagnosticPayloadGeneration") { $0.testAnonymousDiagnosticPayloadGeneration() }
         runTest(name: "testDiagnosticsConsentAndSettingsPersistence") { $0.testDiagnosticsConsentAndSettingsPersistence() }
         runTest(name: "testAnonymousDiagnosticsLocalReportStorage") { $0.testAnonymousDiagnosticsLocalReportStorage() }
+        runTest(name: "testAnonymousDiagnosticsTelegramSecretDecodingAndConfiguration") { $0.testAnonymousDiagnosticsTelegramSecretDecodingAndConfiguration() }
 
         // Game Optimization & GPU Utilization Tests
         runTest(name: "testGameOptimizationNeutralizesProblematicLibraries") { try $0.testGameOptimizationNeutralizesProblematicLibraries() }

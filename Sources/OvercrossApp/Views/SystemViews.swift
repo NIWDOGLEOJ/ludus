@@ -758,6 +758,13 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.bordered)
 
+                    Button {
+                        appModel.sendTelegramTestMessage()
+                    } label: {
+                        Label("Test Telegram Delivery", systemImage: "paperplane.circle")
+                    }
+                    .buttonStyle(.bordered)
+
                     if let payload = appModel.lastDiagnosticPayload {
                         Button {
                             let url = appModel.anonymousDiagnosticsService.gitHubIssueURL(for: payload)
@@ -767,6 +774,33 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+                }
+
+                DisclosureGroup("Telegram Delivery Settings") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("By default, failure and crash reports are transmitted to @ludus_crash_bot. You can optionally supply your own custom Telegram bot token and chat ID below.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "Custom Telegram Bot Token (Optional)",
+                            text: Binding(
+                                get: { appModel.settings.telegramBotToken ?? "" },
+                                set: { appModel.settings.telegramBotToken = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+
+                        TextField(
+                            "Custom Telegram Chat ID (Optional)",
+                            text: Binding(
+                                get: { appModel.settings.telegramChatID ?? "" },
+                                set: { appModel.settings.telegramChatID = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 if appModel.isSendingDiagnostics {

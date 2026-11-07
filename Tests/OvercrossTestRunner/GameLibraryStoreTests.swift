@@ -2553,6 +2553,15 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(history.first?.component, "BottleManager")
     }
 
+    func testAnonymousDiagnosticsTelegramSecretDecodingAndConfiguration() {
+        let token = AnonymousDiagnosticsService.decodeSecret(AnonymousDiagnosticsService.defaultTelegramBotTokenEncoded)
+        let chatID = AnonymousDiagnosticsService.decodeSecret(AnonymousDiagnosticsService.defaultTelegramChatIDEncoded)
+        XCTAssertFalse(token.isEmpty)
+        XCTAssertTrue(token.contains(":"))
+        XCTAssertFalse(chatID.isEmpty)
+        XCTAssertEqual(chatID, "9071372703")
+    }
+
     func testGameOptimizationNeutralizesProblematicLibraries() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LudusOptimizationTest-\(UUID().uuidString)", isDirectory: true)

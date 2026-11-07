@@ -3347,7 +3347,12 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 do {
                     let endpoint = self.settings.customDiagnosticsEndpoint.flatMap { URL(string: $0) }
-                    try await self.anonymousDiagnosticsService.sendReport(payload, endpointURL: endpoint)
+                    try await self.anonymousDiagnosticsService.sendReport(
+                        payload,
+                        endpointURL: endpoint,
+                        customBotToken: self.settings.telegramBotToken,
+                        customChatID: self.settings.telegramChatID
+                    )
                     Task { @MainActor in
                         self.isSendingDiagnostics = false
                         self.diagnosticsStatusMessage = "Diagnostic report shared anonymously."
@@ -3361,6 +3366,38 @@ final class AppModel: ObservableObject {
             }
         } else {
             anonymousDiagnosticsService.saveReportLocally(payload)
+        }
+    }
+
+    func sendTelegramTestMessage() {
+        isSendingDiagnostics = true
+        diagnosticsStatusMessage = "Sending test message to Telegram..."
+        Task { [weak self] in
+            guard let self else { return }
+            let testPayload = self.anonymousDiagnosticsService.buildPayload(
+                component: "TelegramIntegrationTest",
+                error: NSError(domain: "LudusTest", code: 200, userInfo: [NSLocalizedDescriptionKey: "Telegram connection test from Ludus app"]),
+                rawLogs: ["Verified Telegram Bot delivery", "Bot: @ludus_crash_bot"],
+                anonymousInstallationID: self.settings.anonymousInstallationID,
+                isUserInitiated: true,
+                userFeedback: "Test report to verify Telegram failure & bug delivery."
+            )
+            do {
+                try await self.anonymousDiagnosticsService.sendToTelegram(
+                    payload: testPayload,
+                    customBotToken: self.settings.telegramBotToken,
+                    customChatID: self.settings.telegramChatID
+                )
+                Task { @MainActor in
+                    self.isSendingDiagnostics = false
+                    self.diagnosticsStatusMessage = "Test message delivered to Telegram!"
+                }
+            } catch {
+                Task { @MainActor in
+                    self.isSendingDiagnostics = false
+                    self.diagnosticsStatusMessage = "Telegram error: \(error.localizedDescription)"
+                }
+            }
         }
     }
 

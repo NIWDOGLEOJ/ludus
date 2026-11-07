@@ -776,6 +776,11 @@ struct SettingsView: View {
                     }
                 }
 
+                Toggle("Real-Time Telegram Game Session Reports", isOn: $appModel.settings.telegramGameReportsEnabled)
+                Text("Dispatches instant launch notifications and outcome reports to Telegram whenever any game is played, whether it ran successfully or exited with an error.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 DisclosureGroup("Telegram Delivery Settings") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("By default, failure and crash reports are transmitted to @ludus_crash_bot. You can optionally supply your own custom Telegram bot token and chat ID below.")

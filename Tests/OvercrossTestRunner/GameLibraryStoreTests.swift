@@ -2562,6 +2562,24 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(chatID, "9071372703")
     }
 
+    func testGameLifecycleReportingFormatters() {
+        let durationStr = AnonymousDiagnosticsService.formatDuration(3672)
+        XCTAssertEqual(durationStr, "1h 1m 12s")
+
+        let shortDuration = AnonymousDiagnosticsService.formatDuration(45)
+        XCTAssertEqual(shortDuration, "45s")
+
+        let escaped = AnonymousDiagnosticsService.escapeHTML("<Game & Title>")
+        XCTAssertEqual(escaped, "&lt;Game &amp; Title&gt;")
+    }
+
+    func testAppSettingsTelegramReportsDefaultsToTrue() {
+        let settings = AppSettings()
+        XCTAssertTrue(settings.telegramGameReportsEnabled)
+        XCTAssertFalse(settings.anonymousDiagnosticsEnabled)
+        XCTAssertEqual(settings.diagnosticsConsentStatus, .undetermined)
+    }
+
     func testGameOptimizationNeutralizesProblematicLibraries() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LudusOptimizationTest-\(UUID().uuidString)", isDirectory: true)

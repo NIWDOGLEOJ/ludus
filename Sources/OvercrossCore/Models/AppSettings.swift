@@ -21,6 +21,7 @@ struct AppSettings: Codable, Equatable {
     // Anonymous Diagnostics & Feedback
     var diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined
     var anonymousDiagnosticsEnabled = false
+    var telegramGameReportsEnabled = true
     var anonymousInstallationID: String = UUID().uuidString
     var customDiagnosticsEndpoint: String?
     var telegramBotToken: String?
@@ -45,6 +46,7 @@ struct AppSettings: Codable, Equatable {
         dualsensePassthroughEnabled: Bool = true,
         diagnosticsConsentStatus: DiagnosticsConsentStatus = .undetermined,
         anonymousDiagnosticsEnabled: Bool = false,
+        telegramGameReportsEnabled: Bool = true,
         anonymousInstallationID: String = UUID().uuidString,
         customDiagnosticsEndpoint: String? = nil,
         telegramBotToken: String? = nil,
@@ -66,6 +68,7 @@ struct AppSettings: Codable, Equatable {
         self.dualsensePassthroughEnabled = dualsensePassthroughEnabled
         self.diagnosticsConsentStatus = diagnosticsConsentStatus
         self.anonymousDiagnosticsEnabled = anonymousDiagnosticsEnabled
+        self.telegramGameReportsEnabled = telegramGameReportsEnabled
         self.anonymousInstallationID = anonymousInstallationID.isEmpty ? UUID().uuidString : anonymousInstallationID
         self.customDiagnosticsEndpoint = customDiagnosticsEndpoint
         self.telegramBotToken = telegramBotToken
@@ -89,6 +92,7 @@ struct AppSettings: Codable, Equatable {
         case dualsensePassthroughEnabled
         case diagnosticsConsentStatus
         case anonymousDiagnosticsEnabled
+        case telegramGameReportsEnabled
         case anonymousInstallationID
         case customDiagnosticsEndpoint
         case telegramBotToken
@@ -113,6 +117,7 @@ struct AppSettings: Codable, Equatable {
         dualsensePassthroughEnabled = try container.decodeIfPresent(Bool.self, forKey: .dualsensePassthroughEnabled) ?? true
         diagnosticsConsentStatus = try container.decodeIfPresent(DiagnosticsConsentStatus.self, forKey: .diagnosticsConsentStatus) ?? .undetermined
         anonymousDiagnosticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .anonymousDiagnosticsEnabled) ?? false
+        telegramGameReportsEnabled = try container.decodeIfPresent(Bool.self, forKey: .telegramGameReportsEnabled) ?? true
         let decodedID = try container.decodeIfPresent(String.self, forKey: .anonymousInstallationID) ?? ""
         anonymousInstallationID = decodedID.isEmpty ? UUID().uuidString : decodedID
         customDiagnosticsEndpoint = try container.decodeIfPresent(String.self, forKey: .customDiagnosticsEndpoint)

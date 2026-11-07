@@ -1818,10 +1818,30 @@ final class AppModel: ObservableObject {
         isLaunchingGame = true
         let startedAt = Date()
         let launchService = launchService
+        let currentSettings = settings
+        let gameTitle = game.title
+        let execPath = game.executableURL?.path
+
+        if currentSettings.telegramGameReportsEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.anonymousDiagnosticsService.sendGameLaunchNotification(
+                    gameTitle: gameTitle,
+                    graphicsBackend: "macOS Native",
+                    runtimeName: "Native Process",
+                    bottleName: "None",
+                    executablePath: execPath,
+                    customBotToken: currentSettings.telegramBotToken,
+                    customChatID: currentSettings.telegramChatID
+                )
+            }
+        }
+
         launchTask = Task { [weak self] in
             do {
                 let outcome = try await launchService.launch(game)
                 guard let self else { return }
+                let sessionDuration = Date().timeIntervalSince(startedAt)
                 let log = [outcome.summary, outcome.standardOutput, outcome.standardError]
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n")
@@ -1834,6 +1854,25 @@ final class AppModel: ObservableObject {
                     outcome: outcome,
                     error: nil
                 )
+
+                if currentSettings.telegramGameReportsEnabled {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        try? await self.anonymousDiagnosticsService.sendGameSessionReport(
+                            gameTitle: gameTitle,
+                            exitStatus: outcome.exitStatus,
+                            duration: sessionDuration,
+                            graphicsBackend: "macOS Native",
+                            runtimeName: "Native Process",
+                            bottleName: "None",
+                            diagnosticNote: outcome.diagnosticNote,
+                            standardOutput: outcome.standardOutput,
+                            standardError: outcome.standardError,
+                            customBotToken: currentSettings.telegramBotToken,
+                            customChatID: currentSettings.telegramChatID
+                        )
+                    }
+                }
             } catch {
                 guard let self else { return }
                 self.lastLaunchLog = error.localizedDescription
@@ -1845,6 +1884,21 @@ final class AppModel: ObservableObject {
                     outcome: nil,
                     error: error.localizedDescription
                 )
+
+                if currentSettings.telegramGameReportsEnabled {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        try? await self.anonymousDiagnosticsService.sendGameLaunchFailureReport(
+                            gameTitle: gameTitle,
+                            error: error,
+                            runtimeName: "Native Process",
+                            bottleName: "None",
+                            executablePath: execPath,
+                            customBotToken: currentSettings.telegramBotToken,
+                            customChatID: currentSettings.telegramChatID
+                        )
+                    }
+                }
             }
             self?.isLaunchingGame = false
             self?.runningGameIDs.remove(gameID)
@@ -2240,6 +2294,27 @@ final class AppModel: ObservableObject {
         let startedAt = Date()
         let launchService = launchService
         let currentSettings = settings
+        let gameTitle = game.title
+        let runtimeName = runtime.name
+        let bottleName = prefix.name
+        let graphicsBackend = game.graphicsBackend ?? profile?.graphicsBackend.rawValue ?? "Automatic"
+        let execPath = game.executableURL?.path
+
+        if currentSettings.telegramGameReportsEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.anonymousDiagnosticsService.sendGameLaunchNotification(
+                    gameTitle: gameTitle,
+                    graphicsBackend: graphicsBackend,
+                    runtimeName: runtimeName,
+                    bottleName: bottleName,
+                    executablePath: execPath,
+                    customBotToken: currentSettings.telegramBotToken,
+                    customChatID: currentSettings.telegramChatID
+                )
+            }
+        }
+
         launchTask = Task { [weak self] in
             do {
                 guard let self else { return }
@@ -2277,6 +2352,8 @@ final class AppModel: ObservableObject {
                     appSettings: currentSettings,
                     additionalArguments: additionalArguments
                 )
+                let sessionDuration = Date().timeIntervalSince(startedAt)
+
                 if let index = self.games.firstIndex(where: { $0.id == gameID }) {
                     if let epicAppID {
                         if self.games[index].store != .epic || self.games[index].storeApplicationID != epicAppID {
@@ -2305,6 +2382,26 @@ final class AppModel: ObservableObject {
                     outcome: outcome,
                     error: nil
                 )
+
+                if currentSettings.telegramGameReportsEnabled {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        try? await self.anonymousDiagnosticsService.sendGameSessionReport(
+                            gameTitle: gameTitle,
+                            exitStatus: outcome.exitStatus,
+                            duration: sessionDuration,
+                            graphicsBackend: graphicsBackend,
+                            runtimeName: runtimeName,
+                            bottleName: bottleName,
+                            diagnosticNote: outcome.diagnosticNote,
+                            standardOutput: outcome.standardOutput,
+                            standardError: outcome.standardError,
+                            customBotToken: currentSettings.telegramBotToken,
+                            customChatID: currentSettings.telegramChatID
+                        )
+                    }
+                }
+
                 if outcome.exitStatus != 0 {
                     let exitError = NSError(
                         domain: "GameExecution",
@@ -2329,6 +2426,22 @@ final class AppModel: ObservableObject {
                     outcome: nil,
                     error: error.localizedDescription
                 )
+
+                if currentSettings.telegramGameReportsEnabled {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        try? await self.anonymousDiagnosticsService.sendGameLaunchFailureReport(
+                            gameTitle: gameTitle,
+                            error: error,
+                            runtimeName: runtimeName,
+                            bottleName: bottleName,
+                            executablePath: execPath,
+                            customBotToken: currentSettings.telegramBotToken,
+                            customChatID: currentSettings.telegramChatID
+                        )
+                    }
+                }
+
                 self.recordFailure(
                     component: "GameLaunchService",
                     error: error,
@@ -3341,7 +3454,7 @@ final class AppModel: ObservableObject {
         )
         self.lastDiagnosticPayload = payload
 
-        if settings.anonymousDiagnosticsEnabled || isUserInitiated {
+        if settings.anonymousDiagnosticsEnabled || settings.telegramGameReportsEnabled || isUserInitiated {
             isSendingDiagnostics = true
             Task { [weak self] in
                 guard let self else { return }

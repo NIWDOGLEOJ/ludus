@@ -220,6 +220,8 @@ struct OvercrossTestApp {
         runTest(name: "testDiagnosticsConsentAndSettingsPersistence") { $0.testDiagnosticsConsentAndSettingsPersistence() }
         runTest(name: "testAnonymousDiagnosticsLocalReportStorage") { $0.testAnonymousDiagnosticsLocalReportStorage() }
         runTest(name: "testAnonymousDiagnosticsTelegramSecretDecodingAndConfiguration") { $0.testAnonymousDiagnosticsTelegramSecretDecodingAndConfiguration() }
+        runTest(name: "testGameLifecycleReportingFormatters") { $0.testGameLifecycleReportingFormatters() }
+        runTest(name: "testAppSettingsTelegramReportsDefaultsToTrue") { $0.testAppSettingsTelegramReportsDefaultsToTrue() }
 
         // Game Optimization & GPU Utilization Tests
         runTest(name: "testGameOptimizationNeutralizesProblematicLibraries") { try $0.testGameOptimizationNeutralizesProblematicLibraries() }

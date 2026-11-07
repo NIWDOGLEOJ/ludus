@@ -104,7 +104,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
     }
 
     public static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3.3"
     }
 
     // MARK: - Log Sanitization (PII Scrubbing)
@@ -277,6 +277,20 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         customBotToken: String? = nil,
         customChatID: String? = nil
     ) async throws {
+        let htmlMessage = formatTelegramHTMLMessage(for: payload)
+        try await sendTelegramHTMLMessage(
+            htmlMessage,
+            customBotToken: customBotToken,
+            customChatID: customChatID
+        )
+    }
+
+    /// Transmits any formatted HTML payload directly to the Telegram bot and chat.
+    public func sendTelegramHTMLMessage(
+        _ htmlMessage: String,
+        customBotToken: String? = nil,
+        customChatID: String? = nil
+    ) async throws {
         let token = (customBotToken?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ??
             ProcessInfo.processInfo.environment["LUDUS_TELEGRAM_BOT_TOKEN"] ??
             ProcessInfo.processInfo.environment["TELEGRAM_BOT_TOKEN"] ??
@@ -288,7 +302,7 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
             Self.decodeSecret(Self.defaultTelegramChatIDEncoded)
 
         guard !token.isEmpty, !chatID.isEmpty else {
-            // No custom credentials configured; report is saved locally
+            // No credentials configured; report is saved locally
             return
         }
 
@@ -299,7 +313,6 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 10
 
-        let htmlMessage = formatTelegramHTMLMessage(for: payload)
         let bodyObj: [String: Any] = [
             "chat_id": chatID,
             "text": htmlMessage,
@@ -317,19 +330,197 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         }
     }
 
-    private func formatTelegramHTMLMessage(for payload: AnonymousDiagnosticPayload) -> String {
-        func escapeHTML(_ text: String) -> String {
-            text.replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
+    // MARK: - Game Lifecycle Reporting to Telegram
+
+    public static func escapeHTML(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    public static func formatDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m \(seconds)s"
+        } else if minutes > 0 {
+            return "\(minutes)m \(seconds)s"
+        } else {
+            return "\(seconds)s"
+        }
+    }
+
+    /// Sends a real-time notification to Telegram when a game is launched.
+    public func sendGameLaunchNotification(
+        gameTitle: String,
+        graphicsBackend: String? = nil,
+        runtimeName: String? = nil,
+        bottleName: String? = nil,
+        executablePath: String? = nil,
+        customBotToken: String? = nil,
+        customChatID: String? = nil
+    ) async throws {
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let ramString = ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
+        let gameEscaped = Self.escapeHTML(gameTitle)
+        let backendEscaped = Self.escapeHTML(graphicsBackend ?? "Automatic (D3DMetal/DXMT)")
+        let runtimeEscaped = Self.escapeHTML(runtimeName ?? "CrossOver Wine")
+        let bottleEscaped = Self.escapeHTML(bottleName ?? "DefaultBottle")
+        let chipEscaped = Self.escapeHTML(Self.chipModel)
+
+        var msg = """
+        🚀 <b>Ludus Game Launching</b> 🎮
+        ──────────────────────
+        • <b>Game:</b> <code>\(gameEscaped)</code>
+        • <b>Graphics Backend:</b> <code>\(backendEscaped)</code>
+        • <b>Wine Runtime:</b> <code>\(runtimeEscaped)</code>
+        • <b>Bottle:</b> <code>\(bottleEscaped)</code>
+        • <b>Device:</b> <code>\(chipEscaped)</code> (RAM: \(ramString))
+        • <b>macOS:</b> <code>\(Self.osVersion)</code>
+        • <b>App Version:</b> <code>v\(Self.appVersion)</code>
+        • <b>Time:</b> <code>\(isoDate)</code>
+        """
+
+        if let exec = executablePath, !exec.isEmpty {
+            let sanitizedExec = Self.sanitize(log: exec)
+            msg += "\n• <b>Executable:</b> <code>\(Self.escapeHTML(sanitizedExec))</code>"
         }
 
+        try await sendTelegramHTMLMessage(msg, customBotToken: customBotToken, customChatID: customChatID)
+    }
+
+    /// Sends a post-session diagnostic report to Telegram whether the game ran successfully or exited with an error.
+    public func sendGameSessionReport(
+        gameTitle: String,
+        exitStatus: Int32,
+        duration: TimeInterval,
+        graphicsBackend: String? = nil,
+        runtimeName: String? = nil,
+        bottleName: String? = nil,
+        diagnosticNote: String? = nil,
+        standardOutput: String = "",
+        standardError: String = "",
+        customBotToken: String? = nil,
+        customChatID: String? = nil
+    ) async throws {
+        let isSuccess = (exitStatus == 0)
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let ramString = ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
+        let durationFormatted = Self.formatDuration(duration)
+        let gameEscaped = Self.escapeHTML(gameTitle)
+        let chipEscaped = Self.escapeHTML(Self.chipModel)
+
+        let header: String
+        let statusLine: String
+        if isSuccess {
+            header = "🎮 <b>Ludus Game Session Report</b> ✅"
+            statusLine = "• <b>Session Outcome:</b> <b>Ran Successfully (Clean Exit)</b>\n• <b>Exit Code:</b> <code>0</code>"
+        } else {
+            header = "🚨 <b>Ludus Game Execution Failure</b> ❌"
+            statusLine = "• <b>Session Outcome:</b> <b>Process Exited with Error</b>\n• <b>Exit Code:</b> <code>\(exitStatus)</code>"
+        }
+
+        var msg = """
+        \(header)
+        ──────────────────────
+        • <b>Game:</b> <code>\(gameEscaped)</code>
+        \(statusLine)
+        • <b>Session Duration:</b> <code>\(durationFormatted)</code>
+        """
+
+        if let backend = graphicsBackend, !backend.isEmpty {
+            msg += "\n• <b>Graphics:</b> <code>\(Self.escapeHTML(backend))</code>"
+        }
+        if let runtime = runtimeName, !runtime.isEmpty {
+            msg += "\n• <b>Runtime:</b> <code>\(Self.escapeHTML(runtime))</code>"
+        }
+        if let bottle = bottleName, !bottle.isEmpty {
+            msg += "\n• <b>Bottle:</b> <code>\(Self.escapeHTML(bottle))</code>"
+        }
+        if let note = diagnosticNote, !note.isEmpty {
+            msg += "\n• <b>Diagnostic Note:</b> <code>\(Self.escapeHTML(note))</code>"
+        }
+
+        msg += """
+
+        • <b>Device:</b> <code>\(chipEscaped)</code> (RAM: \(ramString))
+        • <b>macOS:</b> <code>\(Self.osVersion)</code>
+        • <b>App Version:</b> <code>v\(Self.appVersion)</code>
+        • <b>Time:</b> <code>\(isoDate)</code>
+        """
+
+        // Append execution logs if available (essential for failures, optional for success)
+        let combinedLogs = [standardError, standardOutput].filter { !$0.isEmpty }.joined(separator: "\n")
+        if !combinedLogs.isEmpty {
+            let sanitized = Self.sanitize(log: combinedLogs)
+            let lines = sanitized.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            if !lines.isEmpty {
+                let tailLines = lines.suffix(isSuccess ? 8 : 25).joined(separator: "\n")
+                msg += "\n\n📋 <b>Execution Log Tail:</b>\n<pre>\(Self.escapeHTML(tailLines))</pre>"
+            }
+        }
+
+        if msg.count > 4000 {
+            msg = String(msg.prefix(3950)) + "\n...</pre>"
+        }
+
+        try await sendTelegramHTMLMessage(msg, customBotToken: customBotToken, customChatID: customChatID)
+    }
+
+    /// Sends a launch failure report to Telegram when a game fails to start at all.
+    public func sendGameLaunchFailureReport(
+        gameTitle: String,
+        error: Error,
+        runtimeName: String? = nil,
+        bottleName: String? = nil,
+        executablePath: String? = nil,
+        customBotToken: String? = nil,
+        customChatID: String? = nil
+    ) async throws {
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let ramString = ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
+        let gameEscaped = Self.escapeHTML(gameTitle)
+        let errorEscaped = Self.escapeHTML(Self.sanitize(log: error.localizedDescription))
+        let chipEscaped = Self.escapeHTML(Self.chipModel)
+
+        var msg = """
+        ❌ <b>Ludus Game Launch Failed</b> 🚨
+        ──────────────────────
+        • <b>Game:</b> <code>\(gameEscaped)</code>
+        • <b>Error:</b> <code>\(errorEscaped)</code>
+        """
+
+        if let runtime = runtimeName, !runtime.isEmpty {
+            msg += "\n• <b>Runtime:</b> <code>\(Self.escapeHTML(runtime))</code>"
+        }
+        if let bottle = bottleName, !bottle.isEmpty {
+            msg += "\n• <b>Bottle:</b> <code>\(Self.escapeHTML(bottle))</code>"
+        }
+        if let exec = executablePath, !exec.isEmpty {
+            let sanitizedExec = Self.sanitize(log: exec)
+            msg += "\n• <b>Executable:</b> <code>\(Self.escapeHTML(sanitizedExec))</code>"
+        }
+
+        msg += """
+
+        • <b>Device:</b> <code>\(chipEscaped)</code> (RAM: \(ramString))
+        • <b>macOS:</b> <code>\(Self.osVersion)</code>
+        • <b>App Version:</b> <code>v\(Self.appVersion)</code>
+        • <b>Time:</b> <code>\(isoDate)</code>
+        """
+
+        try await sendTelegramHTMLMessage(msg, customBotToken: customBotToken, customChatID: customChatID)
+    }
+
+    private func formatTelegramHTMLMessage(for payload: AnonymousDiagnosticPayload) -> String {
         let ramString = ByteCountFormatter.string(fromByteCount: Int64(payload.memoryTotalBytes), countStyle: .memory)
         let isoDate = ISO8601DateFormatter().string(from: payload.timestamp)
         let anonIDShort = String(payload.anonymousInstallationID.prefix(8))
-        let errorDescEscaped = escapeHTML(payload.errorDescription)
-        let compEscaped = escapeHTML(payload.component)
-        let chipEscaped = escapeHTML(payload.chipModel)
+        let errorDescEscaped = Self.escapeHTML(payload.errorDescription)
+        let compEscaped = Self.escapeHTML(payload.component)
+        let chipEscaped = Self.escapeHTML(payload.chipModel)
 
         var msg = """
         🚨 <b>Ludus Diagnostic & Crash Report</b> 🎮
@@ -344,12 +535,12 @@ public final class AnonymousDiagnosticsService: @unchecked Sendable {
         """
 
         if let feedback = payload.userFeedback, !feedback.isEmpty {
-            msg += "\n\n💬 <b>User Note:</b>\n<i>\(escapeHTML(feedback))</i>"
+            msg += "\n\n💬 <b>User Note:</b>\n<i>\(Self.escapeHTML(feedback))</i>"
         }
 
         if !payload.sanitizedLogs.isEmpty {
             let tail = payload.sanitizedLogs.suffix(20).joined(separator: "\n")
-            msg += "\n\n📋 <b>Sanitized Logs:</b>\n<pre>\(escapeHTML(tail))</pre>"
+            msg += "\n\n📋 <b>Sanitized Logs:</b>\n<pre>\(Self.escapeHTML(tail))</pre>"
         }
 
         if msg.count > 4000 {

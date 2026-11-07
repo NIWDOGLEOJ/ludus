@@ -383,8 +383,16 @@ struct GameLaunchService: Sendable {
             if titleRule.dxvkAsync == true && environment["DXVK_ASYNC"] == nil {
                 environment["DXVK_ASYNC"] = "1"
             }
-            for (key, val) in titleRule.additionalEnvironment where environment[key] == nil {
-                environment[key] = val
+            for (key, val) in titleRule.additionalEnvironment {
+                if key == "WINEDLLOVERRIDES" {
+                    if let existing = environment["WINEDLLOVERRIDES"], !existing.isEmpty {
+                        environment["WINEDLLOVERRIDES"] = "\(existing);\(val)"
+                    } else {
+                        environment["WINEDLLOVERRIDES"] = val
+                    }
+                } else if environment[key] == nil {
+                    environment[key] = val
+                }
             }
         }
 
@@ -453,6 +461,36 @@ struct GameLaunchService: Sendable {
             diagnosticNotes.append("Using nested Windows executable (\(launchExecutableURL.lastPathComponent)).")
         }
 
+        // Automatic GPU Vendor Spoofing (AMD AGS Bypass) for D3DMetal
+        if backend == .d3dmetal || backend == .automatic {
+            let needsNvidiaSpoofing = GameOptimizationService.requiresNvidiaGpuSpoofing(
+                gameTitle: game.title,
+                executableURL: launchExecutableURL,
+                installationURL: game.installationURL
+            )
+            if needsNvidiaSpoofing {
+                if environment["D3DM_VENDOR_ID"] == nil {
+                    environment["D3DM_VENDOR_ID"] = "0x10de"
+                }
+                if environment["D3DM_DEVICE_ID"] == nil {
+                    environment["D3DM_DEVICE_ID"] = "0x2786"
+                }
+                if environment["D3DM_DEVICE_DESCRIPTION"] == nil {
+                    environment["D3DM_DEVICE_DESCRIPTION"] = "NVIDIA GeForce RTX 4070"
+                }
+                if environment["D3DM_MULTITHREADED_INTERFACE_ENABLE"] == nil {
+                    environment["D3DM_MULTITHREADED_INTERFACE_ENABLE"] = "0"
+                }
+                if environment["D3DM_ENABLE_ASYNC_COMMIT"] == nil {
+                    environment["D3DM_ENABLE_ASYNC_COMMIT"] = "0"
+                }
+                if environment["HB_D3D12_TSSHIM"] == nil {
+                    environment["HB_D3D12_TSSHIM"] = "1"
+                }
+                diagnosticNotes.append("Configured NVIDIA RTX 4070 GPU profile (bypassed AMD AGS vendor deadlock).")
+            }
+        }
+
         // Automatic Game Optimization (problematic DLL neutralization & memory/streaming tuning)
         let optimizationReport = GameOptimizationService().optimize(game: game, prefixURL: prefix.url)
         if let summary = optimizationReport.summary {
@@ -518,6 +556,17 @@ struct GameLaunchService: Sendable {
         // Normalize dxgi, d3d11, and d3d12 overrides to allow builtin fallback in CrossOver / GPTK
         // to prevent NTSTATUS 0xC0000135 (STATUS_DLL_NOT_FOUND -> exit code 53).
         dllOverrides = Self.normalizeDllOverrides(dllOverrides)
+
+        // Automatically enforce native Microsoft Visual C++ 2015-2022 runtimes when bundled to prevent ABI mismatch crashes
+        let needsMsvcOverrides = GameOptimizationService.requiresMsvcRuntimeOverrides(
+            executableURL: launchExecutableURL,
+            installationURL: game.installationURL
+        )
+        if needsMsvcOverrides && !dllOverrides.contains("concrt140") {
+            let msvcOverrides = "concrt140,msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,vcruntime140_threads=native,builtin"
+            dllOverrides = dllOverrides.isEmpty ? msvcOverrides : "\(dllOverrides);\(msvcOverrides)"
+            diagnosticNotes.append("Applied native VC++ 2015-2022 runtime DLL overrides.")
+        }
 
         let isCrossOverWine = runtime.executableURL.path.contains("SharedSupport/CrossOver") ||
                               runtime.executableURL.path.contains("CrossOver") ||
@@ -623,6 +672,7 @@ struct GameLaunchService: Sendable {
     static func isNixxesOrSonyTitle(title: String, executableURL: URL) -> Bool {
         let t = title.lowercased()
         let exe = executableURL.deletingPathExtension().lastPathComponent.lowercased()
+        guard !t.contains("forza") && !exe.contains("forza") else { return false }
         let keywords = [
             "spider-man",
             "spiderman",

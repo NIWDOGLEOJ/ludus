@@ -253,6 +253,7 @@ struct WineBottleService: Sendable {
                 content += """
 
                 [Software\\\\Wine\\\\Direct3D]
+                "VideoMemorySize"="16384"
                 "csmt"=dword:00000001
                 "MaxVersionGL"=dword:00040006
 
@@ -648,6 +649,17 @@ struct WineBottleService: Sendable {
             settings: [
                 "\"Audio\"": "\"coreaudio\"",
                 "\"Graphics\"": "\"mac,metal\""
+            ],
+            into: lines
+        )
+
+        // 4b. [Software\Wine\Direct3D] - 16GB VRAM Aperture and CSMT
+        lines = mergeRegistrySection(
+            named: "Software\\\\Wine\\\\Direct3D",
+            settings: [
+                "\"VideoMemorySize\"": "\"16384\"",
+                "\"csmt\"": "dword:00000001",
+                "\"MaxVersionGL\"": "dword:00040006"
             ],
             into: lines
         )

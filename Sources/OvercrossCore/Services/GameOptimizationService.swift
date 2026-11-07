@@ -67,7 +67,8 @@ struct GameOptimizationService: Sendable {
         "cchromaeditorlibrary64.dll",
         "cchromaeditorlibrary.dll",
         "dstorage.dll",
-        "dstoragecore.dll"
+        "dstoragecore.dll",
+        "d3d12core.dll"
     ]
 
     /// Essential game libraries that must never remain renamed to `.bak` as games require them to bootstrap.
@@ -366,7 +367,8 @@ struct GameOptimizationService: Sendable {
             neutralized = neutralizeProblematicLibraries(at: targetFolderURL, isSony: isSony)
             if !neutralized.isEmpty {
                 let hasDStorage = neutralized.contains(where: { $0.lowercased().contains("dstorage") })
-                let reason = hasDStorage ? "bypassed DirectStorage I/O spinlock" : "prevented CPU spinlock"
+                let hasD3D12Core = neutralized.contains(where: { $0.lowercased().contains("d3d12core") })
+                let reason = hasDStorage ? "bypassed DirectStorage I/O spinlock" : (hasD3D12Core ? "enforced D3DMetal Agility SDK bypass" : "prevented CPU spinlock")
                 details.append("Neutralized \(neutralized.joined(separator: ", ")) (\(reason))")
             }
         }
@@ -406,6 +408,11 @@ struct GameOptimizationService: Sendable {
                 configuredINI = true
                 details.append("Optimized Engine.ini streaming pool (\(pool)MB) for unified memory")
             }
+        }
+
+        // 6. Vendor-extension & GPU Spoofing detection (AMD AGS Bypass)
+        if Self.requiresNvidiaGpuSpoofing(gameTitle: game.title, executableURL: game.executableURL, installationURL: targetFolderURL) {
+            details.append("Injected NVIDIA RTX 4070 GPU profile (bypassed AMD AGS NoDevice)")
         }
 
         return GameOptimizationReport(
@@ -1055,7 +1062,9 @@ struct GameOptimizationService: Sendable {
             candidatePaths.append(runtimeURL.appendingPathComponent("../lib/wine/x86_64-unix/winemac.so").standardized)
             candidatePaths.append(runtimeURL.appendingPathComponent("../../lib/wine/x86_64-unix/winemac.so").standardized)
         }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
         candidatePaths.append(contentsOf: [
+            URL(fileURLWithPath: "\(home)/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/winemac.so"),
             URL(fileURLWithPath: "/Volumes/sata ssd 1/downloads/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/winemac.so"),
             URL(fileURLWithPath: "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/winemac.so")
         ])
@@ -1130,6 +1139,90 @@ struct GameOptimizationService: Sendable {
         }
 
         return didPatch || callBytes == patchedCall
+    }
+
+    /// Detects whether a game binary or its installation folder requires NVIDIA RTX 4070 GPU spoofing
+    /// to bypass vendor-specific initialization crashes (such as AMD AGS `NoDevice` crash / exit code 1) on Apple Silicon D3DMetal.
+    public static func requiresNvidiaGpuSpoofing(
+        gameTitle: String,
+        executableURL: URL?,
+        installationURL: URL?
+    ) -> Bool {
+        let t = gameTitle.lowercased()
+        let exe = executableURL?.deletingPathExtension().lastPathComponent.lowercased() ?? ""
+
+        // Nixxes titles have a dedicated MacGameFix AMD AGS proxy for Metal and should not be spoofed as NVIDIA.
+        if GameLaunchService.isNixxesOrSonyTitle(title: gameTitle, executableURL: executableURL ?? URL(fileURLWithPath: "/")) {
+            return false
+        }
+
+        // 1. Explicit title pattern match (e.g. Forza series)
+        if t.contains("forza") || exe.contains("forza") {
+            return true
+        }
+
+        // 2. Automated detection: Check if the game contains AMD GPU Services (amd_ags_x64.dll or amd_ags.dll)
+        let searchURLs = [
+            installationURL,
+            executableURL?.deletingLastPathComponent()
+        ].compactMap { $0 }
+
+        for root in searchURLs {
+            guard FileManager.default.fileExists(atPath: root.path) else { continue }
+            if FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags_x64.dll").path) ||
+               FileManager.default.fileExists(atPath: root.appendingPathComponent("amd_ags.dll").path) {
+                return true
+            }
+            // Check immediate subdirectories (e.g. Binaries/Win64)
+            if let contents = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+                for item in contents {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
+                        if FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags_x64.dll").path) ||
+                           FileManager.default.fileExists(atPath: item.appendingPathComponent("amd_ags.dll").path) {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+
+        return false
+    }
+
+    /// Detects whether the game bundles Microsoft Visual C++ runtime DLLs (such as concrt140.dll or msvcp140.dll)
+    /// that require native DLL overrides to prevent ABI mismatch access violations on Wine startup.
+    public static func requiresMsvcRuntimeOverrides(
+        executableURL: URL?,
+        installationURL: URL?
+    ) -> Bool {
+        let searchURLs = [
+            installationURL,
+            executableURL?.deletingLastPathComponent()
+        ].compactMap { $0 }
+
+        let msvcNames = ["concrt140.dll", "msvcp140.dll", "msvcp140_atomic_wait.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
+        for root in searchURLs {
+            guard FileManager.default.fileExists(atPath: root.path) else { continue }
+            for name in msvcNames {
+                if FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path) {
+                    return true
+                }
+            }
+            if let contents = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+                for item in contents {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
+                        for name in msvcNames {
+                            if FileManager.default.fileExists(atPath: item.appendingPathComponent(name).path) {
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false
     }
 }
 
@@ -1297,6 +1390,32 @@ struct TitleOptimizationRegistry: Sendable {
             enableMSync: true,
             recommendedArguments: ["-nolauncher", "-nostreamline", "-reducedtextureheap", "-nodmaengine"],
             notes: "Bypasses PlayStation PC launcher and Streamline crash hooks"
+        ),
+        // Forza Horizon Series (FH4, FH5, FH6) & Forza Motorsport
+        TitleOptimizationRule(
+            appID: "2483190",
+            executablePatterns: [
+                "forzahorizon6.exe",
+                "forzahorizon5.exe",
+                "forzahorizon4.exe",
+                "forzamotorsport.exe",
+                "forza.exe"
+            ],
+            titleName: "Forza Series",
+            recommendedBackend: .d3dmetal,
+            vkd3dFeatureLevel: "12_0",
+            vkd3dShaderModel: "6_6",
+            enableMSync: true,
+            additionalEnvironment: [
+                "D3DM_VENDOR_ID": "0x10de",
+                "D3DM_DEVICE_ID": "0x2786",
+                "D3DM_DEVICE_DESCRIPTION": "NVIDIA GeForce RTX 4070",
+                "D3DM_MULTITHREADED_INTERFACE_ENABLE": "0",
+                "D3DM_ENABLE_ASYNC_COMMIT": "0",
+                "HB_D3D12_TSSHIM": "1",
+                "WINEDLLOVERRIDES": "concrt140,msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,vcruntime140_threads=native,builtin"
+            ],
+            notes: "Configures NVIDIA RTX 4070 GPU spoofing to bypass AMD AGS NoDevice crash and enforces native VC++ runtimes"
         )
     ]
 

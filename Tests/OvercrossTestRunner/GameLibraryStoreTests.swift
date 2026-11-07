@@ -4260,9 +4260,81 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-nostreamline") == true)
         XCTAssertTrue(sm2Rule?.recommendedArguments.contains("-reducedtextureheap") == true)
 
-        // 4. Non-matching appID returns nil
+        // 4. Forza Horizon Series (NVIDIA GPU Spoofing & VC++ overrides)
+        let fh6Rule = TitleOptimizationRegistry.rule(forAppID: nil, executablePath: "/Volumes/Games/forza horizon 6/forzahorizon6.exe")
+        XCTAssertNotNil(fh6Rule)
+        XCTAssertEqual(fh6Rule?.titleName, "Forza Series")
+        XCTAssertEqual(fh6Rule?.recommendedBackend, .d3dmetal)
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_VENDOR_ID"], "0x10de")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 4070")
+        XCTAssertTrue(fh6Rule?.additionalEnvironment["WINEDLLOVERRIDES"]?.contains("concrt140") == true)
+
+        // 5. Non-matching appID returns nil
         let nonMatch = TitleOptimizationRegistry.rule(forAppID: "99999999", executablePath: "unknown_game.exe")
         XCTAssertNil(nonMatch)
+    }
+
+    func testForzaAndAmdAgsGpuSpoofingDetection() throws {
+        // 1. Direct Forza detection
+        XCTAssertTrue(GameOptimizationService.requiresNvidiaGpuSpoofing(
+            gameTitle: "Forza Horizon 6",
+            executableURL: URL(fileURLWithPath: "/games/forza horizon 6/forzahorizon6.exe"),
+            installationURL: nil
+        ))
+
+        // 2. Generic AMD AGS directory detection
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let agsFile = tempDir.appendingPathComponent("amd_ags_x64.dll")
+        try "dummy_ags".write(to: agsFile, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(GameOptimizationService.requiresNvidiaGpuSpoofing(
+            gameTitle: "Generic D3D12 Title",
+            executableURL: tempDir.appendingPathComponent("game.exe"),
+            installationURL: tempDir
+        ))
+
+        // 3. Nixxes titles with MacGameFix proxy must not be spoofed as NVIDIA
+        XCTAssertFalse(GameOptimizationService.requiresNvidiaGpuSpoofing(
+            gameTitle: "Marvel's Spider-Man 2",
+            executableURL: tempDir.appendingPathComponent("Spider-Man2.exe"),
+            installationURL: tempDir
+        ))
+    }
+
+    func testBundledAgilityD3D12CoreNeutralization() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let d3d12coreFile = tempDir.appendingPathComponent("d3d12core.dll")
+        try "dummy_d3d12core".write(to: d3d12coreFile, atomically: true, encoding: .utf8)
+
+        let service = GameOptimizationService()
+        let neutralized = service.neutralizeProblematicLibraries(at: tempDir)
+        XCTAssertTrue(neutralized.contains("d3d12core.dll"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d3d12coreFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("d3d12core.dll.bak").path))
+
+        // Restoration should not restore d3d12core.dll
+        let restored = service.restoreEssentialLibraries(at: tempDir)
+        XCTAssertFalse(restored.contains("d3d12core.dll"))
+    }
+
+    func testMsvcRuntimeOverridesDetection() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let concrtFile = tempDir.appendingPathComponent("concrt140.dll")
+        try "dummy_concrt".write(to: concrtFile, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(GameOptimizationService.requiresMsvcRuntimeOverrides(
+            executableURL: tempDir.appendingPathComponent("game.exe"),
+            installationURL: tempDir
+        ))
     }
 
     func testTitleOptimizationCompatibilityProfileSelection() {

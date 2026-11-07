@@ -4362,14 +4362,14 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         let steamSettingsDir = tempDir.appendingPathComponent("steam_settings", isDirectory: true)
         try FileManager.default.createDirectory(at: steamSettingsDir, withIntermediateDirectories: true)
 
-        let agsFile = tempDir.appendingPathComponent("amd_ags_x64.dll")
-        try "ags_data".write(to: agsFile, atomically: true, encoding: .utf8)
+        let agsBackupFile = tempDir.appendingPathComponent("amd_ags_x64.dll.bak")
+        try "ags_data".write(to: agsBackupFile, atomically: true, encoding: .utf8)
 
         let details = GameOptimizationService.optimizeForzaSeries(at: tempDir)
         XCTAssertTrue(details.contains(where: { $0.contains("Bypassed intro video (T10_MS_Combined.bk2)") }))
         XCTAssertTrue(details.contains(where: { $0.contains("Configured offline mode in steam_emu.ini") }))
         XCTAssertTrue(details.contains(where: { $0.contains("Enabled offline mode in steam_settings") }))
-        XCTAssertTrue(details.contains(where: { $0.contains("Neutralized amd_ags_x64.dll") }))
+        XCTAssertTrue(details.contains(where: { $0.contains("Restored essential amd_ags_x64.dll PE import") }))
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: introVideo.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: videosDir.appendingPathComponent("T10_MS_Combined.bk2.bak").path))
@@ -4382,8 +4382,9 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("offline.txt").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: steamSettingsDir.appendingPathComponent("disable_overlay.txt").path))
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: agsFile.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("amd_ags_x64.dll.bak").path))
+        let agsFile = tempDir.appendingPathComponent("amd_ags_x64.dll")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: agsFile.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: agsBackupFile.path))
     }
 
     func testBundledAgilityD3D12CoreNeutralization() throws {

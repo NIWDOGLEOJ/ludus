@@ -79,7 +79,9 @@ struct GameOptimizationService: Sendable {
         "sl.deepdvc.dll",
         "sl.dlss_g.dll",
         "sl.pcl.dll",
-        "gfesdk.dll"
+        "gfesdk.dll",
+        "amd_ags_x64.dll",
+        "amd_ags.dll"
     ]
 
     /// Libraries in Nixxes / Sony PC ports that trigger translation issues (kept empty as sl.interposer.dll is required for D3D12/DXGI bootstrap)
@@ -1229,21 +1231,19 @@ struct GameOptimizationService: Sendable {
             }
         }
 
-        // 4. Safely neutralize amd_ags_x64.dll when NVIDIA spoofing is active to prevent AGS NoDevice crash loop
+        // 4. Ensure amd_ags_x64.dll is preserved and restored if previously renamed, as it is a mandatory static PE import of Forza
         let agsCandidates = [
             dir.appendingPathComponent("amd_ags_x64.dll"),
             dir.appendingPathComponent("amd_ags.dll")
         ]
         for agsURL in agsCandidates {
-            if FileManager.default.fileExists(atPath: agsURL.path) {
-                let backupURL = agsURL.appendingPathExtension("bak")
-                if !FileManager.default.fileExists(atPath: backupURL.path) {
-                    do {
-                        try FileManager.default.moveItem(at: agsURL, to: backupURL)
-                        details.append("Neutralized \(agsURL.lastPathComponent) (direct D3D12 fallback)")
-                    } catch {
-                        // ignore move errors
-                    }
+            let backupURL = agsURL.appendingPathExtension("bak")
+            if FileManager.default.fileExists(atPath: backupURL.path) && !FileManager.default.fileExists(atPath: agsURL.path) {
+                do {
+                    try FileManager.default.moveItem(at: backupURL, to: agsURL)
+                    details.append("Restored essential \(agsURL.lastPathComponent) PE import")
+                } catch {
+                    // ignore move errors
                 }
             }
         }

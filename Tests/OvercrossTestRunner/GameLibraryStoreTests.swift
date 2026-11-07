@@ -4296,7 +4296,7 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_DEVICE_DESCRIPTION"], "NVIDIA GeForce RTX 4070")
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_WAIT_ON_RESET"], "1")
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_RETAIN_REFERENCES"], "1")
-        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_ENABLE_ASYNC_COMMIT"], "1")
+        XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_ENABLE_ASYNC_COMMIT"], "0")
         XCTAssertEqual(fh6Rule?.additionalEnvironment["D3DM_ALLOW_HOOKING"], "1")
         XCTAssertTrue(fh6Rule?.additionalEnvironment["WINEDLLOVERRIDES"]?.contains("concrt140") == true)
 
@@ -4604,6 +4604,46 @@ final class GameLibraryStoreTests: XCTestCase, @unchecked Sendable {
             prefix: prefix
         )
         XCTAssertTrue(ddOutcome.standardOutput.contains("OVERCROSS_GRAPHICS_BACKEND=dxmt"), "Expected launchWindows to select dxmt for Death's Door")
+    }
+
+    func testSteamStubServiceProvisioningAndDetection() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // 1. AppID detection from steam_appid.txt
+        let appidTxt = tempDir.appendingPathComponent("steam_appid.txt")
+        try "2483190\n".write(to: appidTxt, atomically: true, encoding: .utf8)
+        XCTAssertEqual(SteamStubService.detectSteamAppID(installationURL: tempDir), "2483190")
+
+        // 2. AppID detection from steam_emu.ini
+        try FileManager.default.removeItem(at: appidTxt)
+        let steamEmu = tempDir.appendingPathComponent("steam_emu.ini")
+        try "[Settings]\nAppId=2483190\nUserName=Player".write(to: steamEmu, atomically: true, encoding: .utf8)
+        XCTAssertEqual(SteamStubService.detectSteamAppID(installationURL: tempDir), "2483190")
+
+        // 3. Stub deployment into system32
+        let prefixDir = tempDir.appendingPathComponent("TestPrefix")
+        let stubURL = SteamStubService.ensureStubInstalled(in: prefixDir)
+        XCTAssertNotNil(stubURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stubURL!.path))
+        let stubSize = (try? FileManager.default.attributesOfItem(atPath: stubURL!.path)[.size] as? Int) ?? 0
+        XCTAssertEqual(stubSize, 4096)
+
+        // 4. Save and profile directory provisioning
+        let actions = SteamStubService.provisionProfileAndSaveDirectories(
+            prefixURL: prefixDir,
+            installationURL: tempDir,
+            appID: nil,
+            gameTitle: "Forza Horizon 6"
+        )
+        XCTAssertFalse(actions.isEmpty)
+        let runeAppDir = prefixDir.appendingPathComponent("drive_c/users/Public/Documents/Steam/RUNE/2483190/local")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runeAppDir.path))
+        let codexLink = prefixDir.appendingPathComponent("drive_c/users/Public/Documents/Steam/CODEX")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: codexLink.path))
+        let msRunePls = prefixDir.appendingPathComponent("drive_c/users/Public/Documents/MicrosoftStore/RUNE/Forza Horizon 6 [7BF69384]/1337133713371337/PersistentLocalStorage")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: msRunePls.path))
     }
 }
 

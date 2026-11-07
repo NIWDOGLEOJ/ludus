@@ -425,6 +425,17 @@ struct GameOptimizationService: Sendable {
             }
         }
 
+        // 8. Automated Steam & Xbox Live Profile Save Provisioning
+        if let targetFolderURL {
+            let provActions = SteamStubService.provisionProfileAndSaveDirectories(
+                prefixURL: prefixURL,
+                installationURL: targetFolderURL,
+                appID: game.storeApplicationID,
+                gameTitle: game.title
+            )
+            details.append(contentsOf: provActions)
+        }
+
         return GameOptimizationReport(
             neutralizedLibraries: neutralized,
             configuredEngineINI: configuredINI,
@@ -1525,7 +1536,7 @@ struct TitleOptimizationRegistry: Sendable {
                 "D3DM_DEVICE_ID": "0x2786",
                 "D3DM_DEVICE_DESCRIPTION": "NVIDIA GeForce RTX 4070",
                 "D3DM_MULTITHREADED_INTERFACE_ENABLE": "0",
-                "D3DM_ENABLE_ASYNC_COMMIT": "1",
+                "D3DM_ENABLE_ASYNC_COMMIT": "0",
                 "D3DM_WAIT_ON_RESET": "1",
                 "D3DM_RETAIN_REFERENCES": "1",
                 "D3DM_ALLOW_HOOKING": "1",

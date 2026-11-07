@@ -486,7 +486,7 @@ struct GameLaunchService: Sendable {
                     environment["D3DM_MULTITHREADED_INTERFACE_ENABLE"] = "0"
                 }
                 if environment["D3DM_ENABLE_ASYNC_COMMIT"] == nil {
-                    environment["D3DM_ENABLE_ASYNC_COMMIT"] = "1"
+                    environment["D3DM_ENABLE_ASYNC_COMMIT"] = "0"
                 }
                 if environment["D3DM_WAIT_ON_RESET"] == nil {
                     environment["D3DM_WAIT_ON_RESET"] = "1"
@@ -592,9 +592,24 @@ struct GameLaunchService: Sendable {
                               runtime.name.localizedCaseInsensitiveContains("CrossOver") ||
                               runtime.version.localizedCaseInsensitiveContains("CrossOver") ||
                               (cxRootURL != nil && runtime.executableURL.lastPathComponent == "wine")
-        if (appSettings?.steamworksBridgeEnabled ?? true) && (game.store == .steam || game.storeApplicationID != nil) {
+        let effectiveSteamAppID = game.storeApplicationID ?? SteamStubService.detectSteamAppID(installationURL: game.installationURL ?? workingDir) ?? (game.title.localizedCaseInsensitiveContains("forza horizon 6") ? "2483190" : nil)
+        if (appSettings?.steamworksBridgeEnabled ?? true) && (game.store == .steam || effectiveSteamAppID != nil) {
             if !dllOverrides.contains("steam_api") {
                 dllOverrides = dllOverrides.isEmpty ? SteamworksBridgeService.steamworksDllOverrides : "\(dllOverrides);\(SteamworksBridgeService.steamworksDllOverrides)"
+            }
+        }
+        if let effectiveSteamAppID, !effectiveSteamAppID.isEmpty {
+            if environment["SteamAppId"] == nil {
+                environment["SteamAppId"] = effectiveSteamAppID
+            }
+            if environment["SteamGameId"] == nil {
+                environment["SteamGameId"] = effectiveSteamAppID
+            }
+            if environment["STEAM_COMPAT_APP_ID"] == nil {
+                environment["STEAM_COMPAT_APP_ID"] = effectiveSteamAppID
+            }
+            if environment["SteamOverlayGameId"] == nil {
+                environment["SteamOverlayGameId"] = effectiveSteamAppID
             }
         }
 
@@ -669,6 +684,22 @@ struct GameLaunchService: Sendable {
         defer {
             // Guaranteed cleanup of wineserver, winedevice.exe, services.exe, etc. when the game process finishes
             WineBottleService.terminateBottleProcesses(prefixURL: prefix.url, runtime: runtime)
+        }
+
+        var steamStubDaemon: Process?
+        if SteamStubService.shouldLaunchSteamStub(game: game, installationURL: game.installationURL ?? workingDir) {
+            steamStubDaemon = SteamStubService.launchStubDaemon(
+                runtimeExecutableURL: runtimeExecutableURL,
+                prefixURL: prefix.url,
+                bottleName: prefix.name,
+                installationURL: game.installationURL ?? workingDir
+            )
+            if steamStubDaemon != nil {
+                diagnosticNotes.append("Active Steam process helper initialized.")
+            }
+        }
+        defer {
+            steamStubDaemon?.terminate()
         }
 
         var outcome = try await launchProcess(
